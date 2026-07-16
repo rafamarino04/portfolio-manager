@@ -1,7 +1,7 @@
 """
-Sincronizza data/portfolio.csv con il repository GitHub, cosi' le modifiche
-fatte dentro l'app (pagina "Gestisci Portafoglio") sopravvivono ai riavvii
-e ai redeploy di Streamlit Community Cloud, che altrimenti ripartono sempre
+Sincronizza i file dati (transazioni, portafoglio, impostazioni) con il
+repository GitHub, cosi' le modifiche fatte dentro l'app sopravvivono ai
+riavvii e ai redeploy di Streamlit Community Cloud, che altrimenti ripartono sempre
 dall'ultima versione salvata su GitHub.
 
 Richiede due secrets (vedi README per come crearli):

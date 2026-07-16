@@ -6,10 +6,13 @@ informativo: non e' consulenza finanziaria e non esegue operazioni.
 """
 import datetime as dt
 
+import os
+
 import plotly.express as px
 import streamlit as st
 
 from src import portfolio as pf
+from src import transactions as tx
 from src.auth import check_password
 from src.theme import CATEGORY_COLORS, apply_theme
 
@@ -38,11 +41,11 @@ with st.spinner("Recupero prezzi live..."):
 
 summary = pf.portfolio_summary(enriched)
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Valore totale", f"{summary['total_value']:,.2f}" if summary['total_value'] else "n/d")
 col2.metric("Costo totale", f"{summary['total_cost']:,.2f}" if summary['total_cost'] else "n/d")
 col3.metric(
-    "P&L totale",
+    "P&L non realizzato",
     f"{summary['total_pl']:,.2f}" if summary['total_pl'] is not None else "n/d",
     f"{summary['total_pl_pct']:.2f}%" if summary['total_pl_pct'] is not None else None,
 )
@@ -52,6 +55,12 @@ if summary["best"] is not None:
         summary["best"]["ticker"],
         f"{summary['best']['pl_pct']:.2f}%",
     )
+
+if os.path.exists("data/transactions.csv"):
+    tx_data = tx.load_transactions("data/transactions.csv")
+    if not tx_data.empty:
+        xirr_value = tx.compute_xirr(tx_data, current_total_value=summary["total_value"] or 0)
+        col5.metric("Rendimento reale (XIRR)", f"{xirr_value:.2f}%" if xirr_value is not None else "n/d")
 
 st.divider()
 
@@ -98,7 +107,7 @@ if "price_source" in enriched.columns and (enriched["price_source"] != "live").a
 st.divider()
 st.subheader("Cosa fare da qui")
 n1, n2, n3, n4 = st.columns(4)
-n1.markdown("**\U0001F4BC Gestisci Portafoglio**\n\nAggiungi o modifica posizioni")
+n1.markdown("**\U0001F4D2 Registro Transazioni**\n\nRegistra acquisti, vendite, dividendi")
 n2.markdown("**⚖️ Ribilanciamento**\n\nConfronta target vs attuale")
 n3.markdown("**\U0001F4CA Benchmark**\n\nConfronta con il mercato")
 n4.markdown("**\U0001F50D Opportunità**\n\nSegnali sui tuoi titoli")

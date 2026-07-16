@@ -1,0 +1,7 @@
+date,ticker,type,quantity,price,amount,fees,currency,category,manual_price,note
+2024-03-15,AAPL,Acquisto,10,180.50,,0,USD,Azione,,Esempio - sostituisci con i tuoi movimenti reali
+2023-11-02,ENI.MI,Acquisto,150,13.20,,0,EUR,Azione,,Esempio - Borsa Italiana usa suffisso .MI
+2023-06-10,SWDA.MI,Acquisto,80,85.40,,0,EUR,ETF,,iShares Core MSCI World - esempio ETF
+2024-01-10,BTP-2030,Acquisto,1000,98.50,,0,EUR,Obbligazione,99.20,Esempio obbligazione - prezzo manuale
+2024-02-01,Fondo Bilanciato XYZ,Acquisto,500,105.00,,0,EUR,Fondo/SICAV,108.50,Esempio fondo - NAV manuale
+2024-01-01,Conto Deposito ABC,Acquisto,3000,1,,0,EUR,Liquidità,,Esempio liquidità - versamento iniziale

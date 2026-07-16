@@ -15,20 +15,34 @@ attivo.
 
 ## Cosa include
 
-- `app.py` — dashboard principale (valore, P&L, allocazione per titolo e categoria)
-- `pages/0_Gestisci_Portafoglio.py` — aggiungi/modifica/elimina azioni, ETF, obbligazioni, fondi e liquidità **direttamente dall'app**
+- `app.py` — dashboard principale (valore, P&L, allocazione per titolo e categoria, rendimento reale XIRR)
+- `pages/0_Registro_Transazioni.py` — registra acquisti, vendite e dividendi **direttamente dall'app**: posizioni, P&L realizzato e XIRR si calcolano da qui automaticamente
 - `pages/1_Ribilanciamento.py` — confronta l'allocazione attuale con un target che imposti tu, con importi suggeriti da comprare/vendere
-- `pages/2_Benchmark_e_Performance.py` — confronto con un indice di mercato + quali posizioni hanno contribuito di più al risultato
+- `pages/2_Benchmark_e_Performance.py` — confronto con un indice di mercato (rendimento XIRR reale, non approssimato) + quali posizioni hanno contribuito di più al risultato
 - `pages/3_Opportunita_di_Mercato.py` — segnali sui titoli in portafoglio (range 52 settimane, target price analisti, momentum)
 - `pages/4_Analisi_Titoli.py` — grafico prezzo, statistiche e news per un singolo ticker
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
-- `data/portfolio.csv` — le tue posizioni
+- `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
+- `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
 - `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
+
+## Come funziona il registro transazioni
+
+Il portafoglio non si inserisce più come "posizione attuale" — si registra
+ogni movimento (acquisto, vendita, dividendo) e l'app calcola tutto il
+resto: quantità posseduta e prezzo medio di carico con il metodo del costo
+medio ponderato, il P&L realizzato ad ogni vendita (confrontato col costo
+medio al momento della vendita, non con quello finale), i dividendi
+incassati, e il rendimento reale (XIRR) — un rendimento annualizzato che
+tiene conto di *quando* sono entrati e usciti i soldi, molto più accurato
+di un semplice P&L% quando versi o prelevi nel tempo. `data/portfolio.csv`
+resta per compatibilità con le altre pagine, ma è un file calcolato: si
+rigenera automaticamente ogni volta che salvi un movimento.
 
 ## Setup
 
@@ -55,20 +69,21 @@ Se il repository esiste già e contiene versioni precedenti disordinate, usa
 `git push --force` dopo il remote add per sostituire completamente il
 contenuto con questa versione pulita.
 
-### 3. Personalizza il tuo portafoglio
-Una volta che l'app è online (punto 5), usa la pagina **Gestisci
-Portafoglio** dentro l'app — non serve toccare GitHub. Se preferisci
-partire subito, modifica `data/portfolio.csv`:
+### 3. Registra i tuoi movimenti reali
+Una volta che l'app è online (punto 4), usa la pagina **Registro
+Transazioni** dentro l'app — non serve toccare GitHub. Sostituisci le
+righe di esempio con i tuoi acquisti/vendite/dividendi reali:
 
 | colonna | significato |
 |---|---|
+| `date` | data del movimento |
 | `ticker` | simbolo Yahoo Finance (`AAPL`, `ENI.MI` Borsa Italiana, `VWCE.DE` Xetra), o un'etichetta libera per liquidità/obbligazioni senza ticker |
-| `quantity` | quantità posseduta (nominale per obbligazioni, importo in euro per liquidità) |
-| `buy_price` | prezzo medio di carico (non serve per liquidità) |
-| `buy_date` | data di acquisto (usata anche per il confronto con il benchmark) |
-| `currency` | valuta (informativa) |
-| `category` | `Azione` / `ETF` / `Obbligazione` / `Fondo/SICAV` / `Liquidità` / `Altro` — usata per allocazione e ribilanciamento |
-| `manual_price` | forza un prezzo/NAV invece di quello live (obbligatorio per obbligazioni/fondi senza ticker Yahoo Finance) |
+| `type` | `Acquisto` / `Vendita` / `Dividendo` |
+| `quantity`, `price` | quantità e prezzo per Acquisto/Vendita |
+| `amount` | importo netto per i Dividendi |
+| `fees` | commissioni (opzionale) |
+| `category` | `Azione` / `ETF` / `Obbligazione` / `Fondo/SICAV` / `Liquidità` / `Altro` — basta impostarla al primo acquisto di un titolo |
+| `manual_price` | forza un prezzo/NAV invece di quello live (necessario per obbligazioni/fondi senza ticker Yahoo Finance) |
 
 Per i ticker europei: cerca il titolo su finance.yahoo.com, il simbolo
 mostrato è quello giusto (suffissi comuni: `.MI` Milano, `.DE` Xetra, `.PA`
@@ -94,7 +109,7 @@ workflow**. Per cambiare giorno/orario, modifica la riga `cron` in
 `.github/workflows/weekly_report.yml`.
 
 ### 6. (Consigliato) Rendi permanenti le modifiche fatte dall'app
-Le pagine **Gestisci Portafoglio** e **Impostazioni Report** salvano di
+Le pagine **Registro Transazioni** e **Impostazioni Report** salvano di
 base solo sul disco dell'app, che Streamlit Cloud può azzerare ad ogni
 redeploy (succede anche quando il report automatico fa un commit). Per
 renderle permanenti:
@@ -142,6 +157,10 @@ streamlit run app.py
 - Target price e raccomandazioni degli analisti sono disponibili
   soprattutto per titoli USA/large cap, spesso assenti per titoli europei
   più piccoli.
-- Il confronto "da quando hai iniziato" con il benchmark è un'approssimazione:
-  non tiene conto della tempistica esatta di ogni versamento.
+- Il confronto "da quando hai iniziato" con il benchmark è un'approssimazione
+  solo se non hai ancora registrato transazioni; con il Registro Transazioni
+  compilato usa l'XIRR, molto più accurato.
+- Realizzato/XIRR usano il metodo del costo medio ponderato (average cost),
+  non FIFO/LIFO — è lo standard più comune per investitori privati ma non
+  coincide sempre col calcolo esatto del tuo broker o del fisco.
 - Nessuna esecuzione di ordini: è uno strumento di sola consultazione e analisi.

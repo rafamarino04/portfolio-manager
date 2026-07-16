@@ -1,5 +1,7 @@
 """Confronta il portafoglio con un benchmark di mercato e mostra quali
 posizioni hanno contribuito di più al risultato complessivo."""
+import os
+
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -7,6 +9,7 @@ import streamlit as st
 from src import benchmark as bm
 from src import portfolio as pf
 from src import report_config as cfg
+from src import transactions as tx
 from src.auth import check_password
 from src.theme import apply_theme
 
@@ -37,21 +40,30 @@ with st.spinner("Recupero dati..."):
     summary = pf.portfolio_summary(enriched)
 
 st.subheader("Da quando hai iniziato")
+
+xirr_value = None
+if os.path.exists("data/transactions.csv"):
+    tx_data = tx.load_transactions("data/transactions.csv")
+    if not tx_data.empty:
+        xirr_value = tx.compute_xirr(tx_data, current_total_value=summary.get("total_value") or 0)
+
 since_inception = bm.since_inception_comparison(raw, summary, benchmark_ticker)
 if since_inception:
     c1, c2, c3 = st.columns(3)
-    c1.metric("Rendimento portafoglio", f"{since_inception['portfolio_return_pct']:.2f}%")
+    if xirr_value is not None:
+        c1.metric("Rendimento portafoglio (XIRR)", f"{xirr_value:.2f}%")
+        st.caption("XIRR: rendimento reale annualizzato, calcolato dal Registro Transazioni.")
+    else:
+        c1.metric("Rendimento portafoglio (approssimato)", f"{since_inception['portfolio_return_pct']:.2f}%")
+        st.caption(
+            "Registra i movimenti nel **Registro Transazioni** per avere qui il rendimento reale "
+            "(XIRR) invece di questa approssimazione sul costo totale."
+        )
     c2.metric(f"Rendimento {benchmark_name}", f"{since_inception['benchmark_return_pct']:.2f}%")
-    c3.metric(
-        "Differenza",
-        f"{since_inception['difference_pct']:+.2f}%",
-        delta=f"{since_inception['difference_pct']:+.2f}%",
-    )
-    st.caption(
-        f"Periodo confrontato da {since_inception['start_date'].strftime('%d/%m/%Y')} ad oggi. "
-        "Approssimazione: confronta il rendimento sul costo del portafoglio con quello del "
-        "benchmark nello stesso periodo, senza considerare la tempistica esatta di ogni versamento."
-    )
+    compare_value = xirr_value if xirr_value is not None else since_inception["portfolio_return_pct"]
+    diff = compare_value - since_inception["benchmark_return_pct"]
+    c3.metric("Differenza", f"{diff:+.2f}%", delta=f"{diff:+.2f}%")
+    st.caption(f"Periodo confrontato da {since_inception['start_date'].strftime('%d/%m/%Y')} ad oggi.")
 else:
     st.info("Dati insufficienti per calcolare il confronto (serve almeno una data di acquisto valida).")
 

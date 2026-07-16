@@ -21,11 +21,13 @@ from src import opportunities as opp  # noqa: E402
 from src import portfolio as pf  # noqa: E402
 from src import rebalancing as rb  # noqa: E402
 from src import report_config as cfg  # noqa: E402
+from src import transactions as tx  # noqa: E402
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
 HISTORY_CSV = os.path.join(REPORTS_DIR, "history.csv")
 CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "portfolio.csv")
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "settings.json")
+TX_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "transactions.csv")
 
 
 def append_history(summary: dict, today: str) -> None:
@@ -44,15 +46,22 @@ def append_history(summary: dict, today: str) -> None:
         ])
 
 
-def section_overview(summary: dict) -> list[str]:
+def section_overview(summary: dict, tx_stats: dict | None = None) -> list[str]:
     tv, tc = summary.get("total_value"), summary.get("total_cost")
     tp, tpp = summary.get("total_pl"), summary.get("total_pl_pct")
     lines = [
         f"**Valore totale:** {tv:,.2f}" if tv is not None else "**Valore totale:** n/d",
         f"**Costo totale:** {tc:,.2f}" if tc is not None else "**Costo totale:** n/d",
-        f"**P&L totale:** {tp:,.2f} ({tpp:.2f}%)" if tp is not None and tpp is not None else "**P&L totale:** n/d",
-        "",
+        f"**P&L non realizzato:** {tp:,.2f} ({tpp:.2f}%)" if tp is not None and tpp is not None else "**P&L non realizzato:** n/d",
     ]
+    if tx_stats:
+        if tx_stats.get("realized_pl") is not None:
+            lines.append(f"**P&L realizzato:** {tx_stats['realized_pl']:,.2f}")
+        if tx_stats.get("dividends") is not None:
+            lines.append(f"**Dividendi incassati:** {tx_stats['dividends']:,.2f}")
+        if tx_stats.get("xirr") is not None:
+            lines.append(f"**Rendimento reale (XIRR):** {tx_stats['xirr']:.2f}%")
+    lines.append("")
     best, worst = summary.get("best"), summary.get("worst")
     if best is not None:
         lines.append(f"**Miglior titolo:** {best['ticker']} ({best['pl_pct']:.2f}%)")
@@ -136,12 +145,12 @@ def section_news(enriched) -> list[str]:
     return lines
 
 
-def build_report(raw, enriched, summary, settings: dict, today: str) -> str:
+def build_report(raw, enriched, summary, settings: dict, today: str, tx_stats: dict | None = None) -> str:
     lines = [f"# Report portafoglio — {today}", ""]
     sections = settings.get("report_sections", [])
 
     if "overview" in sections:
-        lines += section_overview(summary)
+        lines += section_overview(summary, tx_stats)
     if "allocation" in sections:
         lines += section_allocation(enriched)
     if "rebalancing" in sections:
@@ -163,8 +172,20 @@ def main():
     enriched = pf.enrich_with_prices(raw)
     summary = pf.portfolio_summary(enriched)
 
+    tx_stats = None
+    if os.path.exists(TX_PATH):
+        tx_data = tx.load_transactions(TX_PATH)
+        if not tx_data.empty:
+            realized = tx.compute_realized_pl(tx_data)
+            dividends = tx.compute_dividends(tx_data)
+            tx_stats = {
+                "realized_pl": realized["realized_pl"].sum() if not realized.empty else 0.0,
+                "dividends": dividends["total_dividends"].sum() if not dividends.empty else 0.0,
+                "xirr": tx.compute_xirr(tx_data, current_total_value=summary.get("total_value") or 0),
+            }
+
     os.makedirs(REPORTS_DIR, exist_ok=True)
-    report_md = build_report(raw, enriched, summary, settings, today)
+    report_md = build_report(raw, enriched, summary, settings, today, tx_stats)
 
     with open(os.path.join(REPORTS_DIR, f"{today}.md"), "w") as f:
         f.write(report_md)
