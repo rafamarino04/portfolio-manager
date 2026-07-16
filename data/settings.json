@@ -1,0 +1,15 @@
+{
+  "target_allocation": {
+    "Azione": 45,
+    "ETF": 30,
+    "Obbligazione": 15,
+    "Fondo/SICAV": 5,
+    "Liquidità": 5,
+    "Altro": 0
+  },
+  "rebalance_tolerance_pct": 5,
+  "benchmark_ticker": "SWDA.MI",
+  "benchmark_name": "iShares Core MSCI World (proxy)",
+  "report_sections": ["overview", "allocation", "rebalancing", "benchmark", "opportunities", "news"],
+  "report_period": "weekly"
+}

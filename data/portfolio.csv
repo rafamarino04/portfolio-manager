@@ -1,0 +1,7 @@
+ticker,quantity,buy_price,buy_date,currency,category,manual_price,note
+AAPL,10,180.50,2024-03-15,USD,Azione,,Esempio - sostituisci con i tuoi titoli
+ENI.MI,150,13.20,2023-11-02,EUR,Azione,,Esempio - Borsa Italiana usa suffisso .MI
+SWDA.MI,80,85.40,2023-06-10,EUR,ETF,,iShares Core MSCI World - esempio ETF
+BTP-2030,1000,98.50,2024-01-10,EUR,Obbligazione,99.20,Esempio obbligazione senza ticker Yahoo - prezzo manuale
+Fondo Bilanciato XYZ,500,105.00,2024-02-01,EUR,Fondo/SICAV,108.50,Esempio fondo - NAV manuale
+Conto Deposito ABC,3000,,2024-01-01,EUR,Liquidità,,Esempio liquidità - quantity è l'importo in euro
