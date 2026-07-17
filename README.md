@@ -24,6 +24,7 @@ attivo.
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
+- `pages/8_Analisi_Tecnica.py` — trend, medie mobili, bande di Bollinger, oscillatori (RSI/Stocastico/MACD), pattern di candlestick e figure di prezzo, per breve/medio/lungo termine
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
@@ -138,6 +139,26 @@ renderle permanenti:
   più utile del solo valore assoluto del portafoglio.
 - **Opportunità**: non sono segnali di acquisto/vendita, ma flag su cosa
   merita un controllo più attento questa settimana.
+- **Analisi Tecnica**: scegli l'orizzonte (breve/medio/lungo termine) in
+  base a come usi quel titolo — trading di breve o investimento — e leggi
+  il "perché" sotto il grafico prima di decidere.
+
+## Analisi tecnica: come funziona
+
+La pagina **Analisi Tecnica** applica in automatico le tecniche classiche
+del libro di J. Murphy ai dati storici del ticker: riconosce il trend
+(massimi/minimi crescenti o decrescenti), disegna sul grafico supporti,
+resistenze e trendlines calcolati dagli estremi locali, calcola medie
+mobili e bande di Bollinger, i principali oscillatori (RSI 14, Stocastico
+14/3/3, MACD 12/26/9) e segnala i pattern di candlestick e le figure di
+prezzo (doppio massimo/minimo, triangoli) più recenti, con l'obiettivo di
+prezzo calcolato secondo le tecniche di misurazione standard (altezza
+della figura proiettata dal punto di rottura). Il punteggio tecnico
+sintetico e ogni riga di dettaglio sono generati da regole esplicite, non
+da un modello black-box: puoi sempre risalire al perché di ogni segnale.
+I tre orizzonti temporali usano parametri diversi (oscillatori più corti
+e sensibili per il breve termine, dati settimanali per il lungo termine),
+così puoi usare la stessa pagina sia per il trading sia per l'investimento.
 
 ## Sviluppo/test in locale (opzionale)
 
@@ -164,3 +185,7 @@ streamlit run app.py
   non FIFO/LIFO — è lo standard più comune per investitori privati ma non
   coincide sempre col calcolo esatto del tuo broker o del fisco.
 - Nessuna esecuzione di ordini: è uno strumento di sola consultazione e analisi.
+- I pattern grafici e le candele in Analisi Tecnica sono rilevati con
+  regole geometriche automatiche (non da un occhio umano): possono
+  produrre falsi segnali, soprattutto su titoli poco liquidi o mercati
+  laterali. Vanno letti come spunti da verificare, non certezze.

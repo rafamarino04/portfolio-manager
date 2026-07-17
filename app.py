@@ -106,9 +106,10 @@ if "price_source" in enriched.columns and (enriched["price_source"] != "live").a
 
 st.divider()
 st.subheader("Cosa fare da qui")
-n1, n2, n3, n4 = st.columns(4)
+n1, n2, n3, n4, n5 = st.columns(5)
 n1.markdown("**\U0001F4D2 Registro Transazioni**\n\nRegistra acquisti, vendite, dividendi")
 n2.markdown("**⚖️ Ribilanciamento**\n\nConfronta target vs attuale")
 n3.markdown("**\U0001F4CA Benchmark**\n\nConfronta con il mercato")
 n4.markdown("**\U0001F50D Opportunità**\n\nSegnali sui tuoi titoli")
+n5.markdown("**\U0001F4C8 Analisi Tecnica**\n\nTrend, oscillatori, pattern")
 st.caption("Usa il menu a sinistra per navigare tra le pagine.")
