@@ -24,10 +24,12 @@ attivo.
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
+- `pages/8_Analisi_Fondamentale.py` — come sta lavorando l'azienda e quali sono i prospetti futuri, per un singolo titolo: bilancio storico (ricavi/utile/margini/FCF/debito), qualità e valutazione, contesto settoriale (ETF di settore + concorrenti a scelta), news con sentiment automatico, e una sintesi finale
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
+- `data/peers.csv` — i concorrenti che hai indicato per ogni titolo (creato al primo utilizzo della pagina Analisi Fondamentale)
 - `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
 - `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
@@ -208,6 +210,43 @@ settimanali per l'investimento di lungo periodo — così puoi cambiare la
 profondità dell'analisi (grafico, sezioni e piano operativo insieme) in
 base al tipo di decisione, senza lasciare la pagina.
 
+## Analisi Fondamentale: come funziona
+
+La pagina **Analisi Fondamentale** risponde a una domanda diversa da
+quella tecnica: come sta lavorando l'azienda a livello di numeri, e quali
+sono i prospetti futuri — non il movimento del prezzo. È volutamente
+limitata ai singoli titoli: le ETF non hanno un bilancio proprio, quindi
+richiederebbero un'altra logica (prevista come sviluppo successivo).
+
+Quattro sezioni, ciascuna con un paragrafo e un verdetto, come in Analisi
+Tecnica:
+
+- **Numeri di bilancio**: storico di ricavi, utile netto, margini, free
+  cash flow, debito e patrimonio netto (ultimi anni, più i trimestri più
+  recenti in un pannello a parte) — per vedere se l'azienda sta
+  migliorando o peggiorando nel tempo, non solo la foto di oggi. Tabella
+  e grafico ricavi/utile netto per periodo.
+- **Qualità e valutazione**: ROE, margini, leva finanziaria, crescita,
+  PEG e costo del capitale (CAPM su tasso privo di rischio live). La
+  valutazione resta relativa — multipli confrontati con la storia del
+  titolo stesso e con eventuali concorrenti — non un fair value stimato
+  con un DCF: le assunzioni di crescita di lungo periodo richiederebbero
+  dati di ricerca a pagamento che l'app non usa.
+- **Contesto settoriale**: un ETF di settore (SPDR, lo standard di
+  mercato) come proxy per il trend del settore nel suo complesso, la
+  forza relativa del titolo rispetto al settore su più orizzonti, e — se
+  indichi dei concorrenti nella pagina — un confronto diretto fianco a
+  fianco su multipli, margini e crescita.
+- **Notizie e prospettive future**: le news più recenti classificate per
+  tono (positivo/negativo/neutro) con un semplice filtro per parole
+  chiave in inglese, più il contesto macro generale (tassi, clima di
+  mercato) già calcolato altrove nell'app.
+
+In fondo, una **Sintesi** che ragiona su quanto le quattro sezioni
+raccontano la stessa storia o si contraddicono (es. bilancio in
+miglioramento ma valutazione già elevata), sullo stesso principio della
+sintesi tecnica.
+
 ## Sviluppo/test in locale (opzionale)
 
 ```bash
@@ -247,3 +286,17 @@ streamlit run app.py
   titolo. Stop e target sono un punto di partenza tecnico, non tengono
   conto di commissioni, slippage, orari di mercato o della tua gestione
   del rischio complessiva.
+- I prospetti di bilancio (Analisi Fondamentale) dipendono dalla
+  copertura Yahoo Finance: spesso incompleti o assenti per titoli non
+  statunitensi o a bassa capitalizzazione. Le etichette delle voci di
+  bilancio non sono rigidamente standardizzate: alcune metriche (es.
+  "Utile lordo" per le società finanziarie) possono risultare "n/d"
+  anche quando l'azienda esiste ed è quotata.
+- Il contesto settoriale usa ETF di settore SPDR, che coprono il mercato
+  USA: per titoli non statunitensi è un proxy imperfetto del settore
+  reale del titolo, utile come indicazione generale più che come
+  benchmark esatto.
+- Il sentiment sulle news è un filtro per parole chiave in inglese, non
+  un modello linguistico: può classificare male titoli ambigui o ironici
+  ed è pensato come primo orientamento, da verificare leggendo gli
+  articoli.
