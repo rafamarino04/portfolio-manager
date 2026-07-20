@@ -661,6 +661,62 @@ def chart_shapes(snap: dict) -> tuple[list, list]:
     return shapes, annotations
 
 
+def entry_context(snap: dict | None, entry_price: float | None) -> dict | None:
+    """Contestualizza uno snapshot tecnico rispetto a un prezzo di
+    ingresso — il prezzo medio di carico reale (da un titolo in
+    portafoglio) o un prezzo di riferimento pianificato (da un titolo in
+    Preferiti non ancora comprato). Le note restano descrittive/statistiche,
+    non indicazioni operative dirette."""
+    if not snap or not entry_price or entry_price <= 0 or snap.get("price") is None:
+        return None
+
+    price = snap["price"]
+    pl_pct = (price - entry_price) / entry_price * 100
+    notes = []
+    notes.append(
+        f"Sei {'sopra' if pl_pct >= 0 else 'sotto'} il prezzo di riferimento "
+        f"({entry_price:.2f}) del {pl_pct:+.1f}%."
+    )
+
+    rsig = snap.get("rsi_signal")
+    if pl_pct > 0 and rsig in ("ipercomprato", "ipercomprato_forte"):
+        notes.append(
+            "Il titolo è in ipercomprato mentre sei in guadagno: in questa condizione alcuni "
+            "investitori valutano una presa di profitto parziale, da soppesare col proprio orizzonte."
+        )
+    if pl_pct < 0 and rsig in ("ipervenduto", "ipervenduto_forte"):
+        notes.append(
+            "Il titolo è in ipervenduto mentre sei in perdita: storicamente è una zona dove il "
+            "ribasso rallenta più spesso, ma non è garanzia di un'inversione."
+        )
+    if pl_pct < 0 and snap.get("trend") == "ribassista":
+        notes.append("Il trend resta ribassista: nessun segnale tecnico di inversione rilevato per ora.")
+    if pl_pct > 0 and snap.get("trend") == "rialzista":
+        notes.append("Il trend resta rialzista e coerente con la tua posizione in guadagno.")
+    if pl_pct > 0 and snap.get("trend") == "ribassista":
+        notes.append("Sei ancora in guadagno ma il trend è girato ribassista: una situazione da monitorare.")
+    if pl_pct < 0 and snap.get("trend") == "rialzista":
+        notes.append("Sei in perdita ma il trend è rialzista: il ribasso recente potrebbe essere una correzione entro un trend più ampio.")
+
+    for lvl in snap.get("support_resistance", []):
+        if lvl["role"] == "supporto" and price > lvl["level"]:
+            dist = (price - lvl["level"]) / price * 100
+            if dist < 5:
+                notes.append(
+                    f"Sei vicino (~{dist:.1f}%) a un supporto a {lvl['level']:.2f}: livello spesso "
+                    "osservato come area di tenuta del prezzo."
+                )
+        if lvl["role"] == "resistenza" and price < lvl["level"]:
+            dist = (lvl["level"] - price) / price * 100
+            if dist < 5:
+                notes.append(
+                    f"Sei vicino (~{dist:.1f}%) a una resistenza a {lvl['level']:.2f}: livello spesso "
+                    "osservato come area di freno del prezzo."
+                )
+
+    return {"entry_price": entry_price, "price": price, "pl_pct": pl_pct, "notes": notes}
+
+
 def multi_horizon_analysis(symbol: str) -> dict:
     """Analisi sui tre orizzonti temporali in un'unica chiamata — usata
     dalla pagina dedicata e, in futuro, dal motore di scoring composito."""

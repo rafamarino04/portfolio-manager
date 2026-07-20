@@ -20,7 +20,7 @@ attivo.
 - `pages/1_Ribilanciamento.py` — confronta l'allocazione attuale con un target che imposti tu, con importi suggeriti da comprare/vendere
 - `pages/2_Benchmark_e_Performance.py` — confronto con un indice di mercato (rendimento XIRR reale, non approssimato) + quali posizioni hanno contribuito di più al risultato
 - `pages/3_Opportunita_di_Mercato.py` — segnali sui titoli in portafoglio (range 52 settimane, target price analisti, momentum)
-- `pages/4_Analisi_Titoli.py` — grafico prezzo, statistiche e news per un singolo ticker
+- `pages/4_Analisi_Titoli.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera), tutti con analisi tecnica contestualizzata sul tuo prezzo di carico/riferimento
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
@@ -28,6 +28,7 @@ attivo.
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
+- `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Titoli)
 - `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
 - `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
@@ -160,6 +161,33 @@ I tre orizzonti temporali usano parametri diversi (oscillatori più corti
 e sensibili per il breve termine, dati settimanali per il lungo termine),
 così puoi usare la stessa pagina sia per il trading sia per l'investimento.
 
+## Analisi Titoli: Portafoglio, Preferiti e segnali
+
+La pagina **Analisi Titoli** è il punto in cui l'analisi tecnica diventa
+supporto a una decisione, non solo informazione a se stante:
+
+- **Portafoglio**: elenca automaticamente i titoli che hai già (dal
+  Registro Transazioni) — nessuna ricerca necessaria. L'analisi tecnica
+  viene mostrata insieme al tuo prezzo medio di carico reale: variazione
+  %, e note che collegano il segnale tecnico alla tua posizione (es. "sei
+  in guadagno e il titolo è in ipercomprato").
+- **Preferiti**: una watchlist libera, anche su titoli che non possiedi.
+  Puoi impostare un prezzo di riferimento/ingresso pianificato per avere
+  la stessa lettura contestuale prima ancora di comprare. Il pulsante
+  "Scansiona preferiti" applica un set di regole tecniche oggettive
+  (incrocio RSI 70/30, incrocio MACD/segnale, rottura di supporto o
+  resistenza, candela o figura di prezzo appena rilevata) e mostra solo i
+  titoli con un evento reale — niente rumore sugli altri. Va ricalcolato
+  manualmente ogni volta che apri la pagina: non ci sono notifiche push in
+  questa versione.
+- **Cerca**: ricerca libera per qualsiasi altro titolo, con un pulsante
+  rapido per aggiungerlo ai Preferiti.
+
+Tutte e tre le sezioni usano lo stesso selettore di orizzonte temporale
+(breve/medio/lungo) di Analisi Tecnica, così puoi cambiare la profondità
+dell'analisi in base al tipo di decisione — trading o investimento — senza
+lasciare la pagina.
+
 ## Sviluppo/test in locale (opzionale)
 
 ```bash
@@ -189,3 +217,6 @@ streamlit run app.py
   regole geometriche automatiche (non da un occhio umano): possono
   produrre falsi segnali, soprattutto su titoli poco liquidi o mercati
   laterali. Vanno letti come spunti da verificare, non certezze.
+- Gli avvisi sui Preferiti sono solo in-app: nessuna email/notifica push in
+  questa versione. Vanno controllati aprendo la pagina e premendo
+  "Scansiona preferiti" — non è un servizio che gira in background.

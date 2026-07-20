@@ -4,13 +4,12 @@ orizzonte temporale (breve/medio/lungo termine).
 
 Metodologia basata su John J. Murphy, "Analisi tecnica dei mercati
 finanziari" (si veda src/technical.py per il dettaglio delle regole)."""
-import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
 from src import technical as tech
+from src import technical_view as tv
 from src.auth import check_password
-from src.theme import GOLD, GRAY, GREEN, NAVY, RED, apply_theme, badge, disclaimer
+from src.theme import apply_theme, badge, disclaimer
 
 st.set_page_config(page_title="Analisi Tecnica", page_icon="\U0001F4C8", layout="wide")
 apply_theme()
@@ -68,34 +67,8 @@ c5.metric("MACD (istogramma)", f"{macd_val:+.3f}" if macd_val is not None else "
 st.markdown("")
 
 # --- Grafico principale con overlay -----------------------------------------
-hist = snap["hist"]
-ma = snap["moving_averages"]
-boll = snap["bollinger"]
-
-fig = go.Figure()
-fig.add_trace(go.Candlestick(
-    x=hist.index, open=hist["Open"], high=hist["High"], low=hist["Low"], close=hist["Close"],
-    name=symbol, increasing_line_color=GREEN, decreasing_line_color=RED,
-))
-params = tech.HORIZONS[horizon]
-fig.add_trace(go.Scatter(x=hist.index, y=ma["fast"], name=f"Media {params['ma_fast']}", line=dict(color=GOLD, width=1)))
-fig.add_trace(go.Scatter(x=hist.index, y=ma["mid"], name=f"Media {params['ma_mid']}", line=dict(color=NAVY, width=1)))
-fig.add_trace(go.Scatter(x=hist.index, y=ma["slow"], name=f"Media {params['ma_slow']}", line=dict(color=GRAY, width=1)))
-fig.add_trace(go.Scatter(x=hist.index, y=boll["upper"], name="Bollinger superiore",
-                          line=dict(color=GRAY, width=1, dash="dot"), opacity=0.6))
-fig.add_trace(go.Scatter(x=hist.index, y=boll["lower"], name="Bollinger inferiore",
-                          line=dict(color=GRAY, width=1, dash="dot"), opacity=0.6,
-                          fill="tonexty", fillcolor="rgba(107,114,128,0.06)"))
-
-shapes, annotations = tech.chart_shapes(snap)
-fig.update_layout(
-    title=f"{symbol} — {snap['horizon_label']}",
-    xaxis_title="Data", yaxis_title="Prezzo",
-    xaxis_rangeslider_visible=False,
-    shapes=shapes, annotations=annotations,
-    height=520, legend=dict(orientation="h", yanchor="bottom", y=1.02),
-)
-st.plotly_chart(fig, use_container_width=True)
+fig = tv.build_price_chart(snap)
+st.plotly_chart(fig, use_container_width=True, key="ta_price_chart")
 st.caption(
     "Linee tratteggiate orizzontali: supporti (verde) e resistenze (rosso). "
     "Linee diagonali: trendline di supporto/resistenza sugli ultimi minimi/massimi. "
@@ -103,29 +76,8 @@ st.caption(
 )
 
 # --- Oscillatori -------------------------------------------------------------
-osc = make_subplots(
-    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-    subplot_titles=("RSI", "Stocastico %K/%D", "MACD"),
-    row_heights=[0.33, 0.33, 0.34],
-)
-osc.add_trace(go.Scatter(x=hist.index, y=snap["rsi_series"], line=dict(color=NAVY, width=1.3), name="RSI"), row=1, col=1)
-osc.add_hline(y=70, line=dict(color=RED, width=1, dash="dot"), row=1, col=1)
-osc.add_hline(y=30, line=dict(color=GREEN, width=1, dash="dot"), row=1, col=1)
-
-stoch = snap["stochastic"]
-osc.add_trace(go.Scatter(x=hist.index, y=stoch["k"], line=dict(color=GOLD, width=1.3), name="%K"), row=2, col=1)
-osc.add_trace(go.Scatter(x=hist.index, y=stoch["d"], line=dict(color=NAVY, width=1.3), name="%D"), row=2, col=1)
-osc.add_hline(y=80, line=dict(color=RED, width=1, dash="dot"), row=2, col=1)
-osc.add_hline(y=20, line=dict(color=GREEN, width=1, dash="dot"), row=2, col=1)
-
-macd_res = snap["macd"]
-hist_colors = ["#1E8E5A" if v is not None and v >= 0 else "#C0392B" for v in macd_res["hist"].fillna(0)]
-osc.add_trace(go.Bar(x=hist.index, y=macd_res["hist"], marker_color=hist_colors, name="Istogramma"), row=3, col=1)
-osc.add_trace(go.Scatter(x=hist.index, y=macd_res["macd"], line=dict(color=NAVY, width=1.2), name="MACD"), row=3, col=1)
-osc.add_trace(go.Scatter(x=hist.index, y=macd_res["signal"], line=dict(color=GOLD, width=1.2), name="Segnale"), row=3, col=1)
-
-osc.update_layout(height=560, showlegend=False, margin=dict(t=40))
-st.plotly_chart(osc, use_container_width=True)
+osc = tv.build_oscillator_chart(snap)
+st.plotly_chart(osc, use_container_width=True, key="ta_osc_chart")
 
 # --- Valutazione tecnica -----------------------------------------------------
 st.subheader("Valutazione tecnica")
