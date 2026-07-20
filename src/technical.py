@@ -207,6 +207,20 @@ def williams_r(hist: pd.DataFrame, period: int = 14) -> pd.Series:
     return -100 * (high_max - hist["Close"]) / (high_max - low_min)
 
 
+def atr(hist: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average True Range di Wilder: la volatilità media recente in punti
+    di prezzo, usata per calibrare stop e obiettivi in proporzione a
+    quanto il titolo si muove normalmente — non nel materiale delle
+    tecniche di misurazione delle figure di Murphy usato per il resto del
+    modulo, ma uno standard ampiamente diffuso (stesso autore dell'RSI)
+    aggiunto qui per rendere operativo il piano di trading di breve
+    termine (vedi trade_plan)."""
+    high, low, close = hist["High"], hist["Low"], hist["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+
 # ---------------------------------------------------------------------------
 # Trend, supporti/resistenze, trendlines (cap. 4)
 # ---------------------------------------------------------------------------
@@ -478,6 +492,7 @@ def technical_snapshot(symbol: str, horizon: str = "medio") -> dict | None:
     stoch = stochastic(hist, params["stoch_k"], params["stoch_d"], params["stoch_smooth"])
     macd_res = macd(close)
     wr_series = williams_r(hist)
+    atr_series = atr(hist)
 
     sr_levels = support_resistance_levels(hist, swing_highs, swing_lows)
     candlesticks = detect_candlestick_patterns(hist, lookback=8)
@@ -499,6 +514,7 @@ def technical_snapshot(symbol: str, horizon: str = "medio") -> dict | None:
         "rsi": rsi_val, "rsi_signal": rsi_signal(rsi_val), "rsi_series": rsi_series,
         "stochastic": stoch, "macd": macd_res,
         "williams_r": _last(wr_series), "williams_r_series": wr_series,
+        "atr": _last(atr_series), "atr_series": atr_series,
         "support_resistance": sr_levels,
         "candlesticks": candlesticks,
         "chart_patterns": chart_patterns,
@@ -1059,6 +1075,115 @@ def build_narrative(snap: dict | None, entry_price: float | None = None) -> dict
         _section_patterns(snap),
     ]
     return {"sections": sections, "synthesis": _write_synthesis(snap, sections, entry_price)}
+
+
+def numeric_summary(snap: dict) -> list[tuple[str, str]]:
+    """Elenco (etichetta, valore) di tutti i numeri calcolati — per chi
+    vuole i dati grezzi (supporti, resistenze, valori delle medie, degli
+    oscillatori, dell'ATR...) senza dover leggere il testo descrittivo."""
+    if not snap:
+        return []
+    sr = snap.get("support_resistance", [])
+    supports = sorted(l["level"] for l in sr if l["role"] == "supporto")
+    resistances = sorted(l["level"] for l in sr if l["role"] == "resistenza")
+    ma = snap["moving_averages"]
+    boll = snap["bollinger"]
+    stoch = snap["stochastic"]
+    macd_res = snap["macd"]
+    params = HORIZONS[snap["horizon"]]
+
+    def _fmt(x, decimals=2):
+        return f"{x:.{decimals}f}" if x is not None else "n/d"
+
+    rows = [
+        ("Supporti", ", ".join(f"{s:.2f}" for s in supports) or "n/d"),
+        ("Resistenze", ", ".join(f"{r:.2f}" for r in resistances) or "n/d"),
+        (f"Media mobile ({params['ma_fast']})", _fmt(ma.get("fast_val"))),
+        (f"Media mobile ({params['ma_mid']})", _fmt(ma.get("mid_val"))),
+        (f"Media mobile ({params['ma_slow']})", _fmt(ma.get("slow_val"))),
+        ("Bollinger — banda superiore", _fmt(boll.get("upper_val"))),
+        ("Bollinger — mediana (20)", _fmt(boll.get("mid_val"))),
+        ("Bollinger — banda inferiore", _fmt(boll.get("lower_val"))),
+        ("Bollinger — %B", _fmt(boll.get("percent_b"))),
+        (f"RSI ({params['rsi_period']})", _fmt(snap.get("rsi"), 1)),
+        ("Stocastico %K", _fmt(stoch.get("k_val"), 1)),
+        ("Stocastico %D", _fmt(stoch.get("d_val"), 1)),
+        ("MACD", _fmt(macd_res.get("macd_val"), 3)),
+        ("Segnale MACD", _fmt(macd_res.get("signal_val"), 3)),
+        ("Istogramma MACD", _fmt(macd_res.get("hist_val"), 3)),
+        ("Williams %R", _fmt(snap.get("williams_r"), 1)),
+        ("ATR (volatilità media)", _fmt(snap.get("atr"))),
+    ]
+    for cp in snap.get("chart_patterns", []):
+        if cp.get("target") is not None:
+            rows.append((f"Obiettivo di prezzo — {cp['pattern']}", f"{cp['target']:.2f}"))
+    return rows
+
+
+def trade_plan(snap: dict | None) -> dict | None:
+    """Struttura operativa (ingresso/stop/target/rapporto rischio-
+    rendimento) costruita solo su livelli tecnici oggettivi: supporto o
+    resistenza più vicini come riferimento per lo stop, resistenza/
+    supporto o obiettivo di figura più vicino come target, ATR come
+    fallback quando non c'è un livello vicino. È un modello di piano,
+    non un ordine da eseguire: dimensionamento e tolleranza al rischio
+    restano scelte personali."""
+    if not snap or snap.get("price") is None or not snap.get("atr"):
+        return None
+
+    price = snap["price"]
+    atr_val = snap["atr"]
+    score = technical_score(snap)
+    if score is None or -0.2 <= score <= 0.2:
+        return {"bias": "nessun_setup", "score": score, "atr": atr_val, "price": price}
+
+    sr = snap.get("support_resistance", [])
+    supports = sorted((l["level"] for l in sr if l["role"] == "supporto" and l["level"] < price), reverse=True)
+    resistances = sorted(l["level"] for l in sr if l["role"] == "resistenza" and l["level"] > price)
+    up_targets = sorted(cp["target"] for cp in snap.get("chart_patterns", [])
+                         if cp.get("target") and cp["direction"] == "rialzista" and cp["target"] > price)
+    down_targets = sorted((cp["target"] for cp in snap.get("chart_patterns", [])
+                            if cp.get("target") and cp["direction"] == "ribassista" and cp["target"] < price),
+                           reverse=True)
+
+    bias = "long" if score > 0.2 else "short"
+
+    if bias == "long":
+        nearest_support = supports[0] if supports else None
+        if nearest_support is not None and (price - nearest_support) <= 3 * atr_val:
+            stop = nearest_support - 0.5 * atr_val
+            stop_basis = f"leggermente sotto il supporto più vicino ({nearest_support:.2f})"
+        else:
+            stop = price - 1.5 * atr_val
+            stop_basis = "1,5 volte l'ATR sotto il prezzo attuale (nessun supporto vicino)"
+        candidates = resistances[:1] + up_targets[:1]
+        target = min(candidates) if candidates else price + 2 * atr_val
+        target_basis = "la resistenza o l'obiettivo di figura più vicino" if candidates else "2 volte l'ATR sopra il prezzo (nessun livello vicino)"
+        risk = price - stop
+        reward = target - price
+    else:
+        nearest_resistance = resistances[0] if resistances else None
+        if nearest_resistance is not None and (nearest_resistance - price) <= 3 * atr_val:
+            stop = nearest_resistance + 0.5 * atr_val
+            stop_basis = f"leggermente sopra la resistenza più vicina ({nearest_resistance:.2f})"
+        else:
+            stop = price + 1.5 * atr_val
+            stop_basis = "1,5 volte l'ATR sopra il prezzo attuale (nessuna resistenza vicina)"
+        candidates = supports[:1] + down_targets[:1]
+        target = max(candidates) if candidates else price - 2 * atr_val
+        target_basis = "il supporto o l'obiettivo di figura più vicino" if candidates else "2 volte l'ATR sotto il prezzo (nessun livello vicino)"
+        risk = stop - price
+        reward = price - target
+
+    rr = (reward / risk) if risk and risk > 0 else None
+
+    return {
+        "bias": bias, "score": score, "atr": atr_val, "price": price,
+        "entry": price, "stop": round(stop, 4), "target": round(target, 4),
+        "stop_basis": stop_basis, "target_basis": target_basis,
+        "risk": round(risk, 4) if risk else None, "reward": round(reward, 4) if reward else None,
+        "risk_reward": round(rr, 2) if rr else None,
+    }
 
 
 def multi_horizon_analysis(symbol: str) -> dict:

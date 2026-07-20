@@ -113,6 +113,14 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
     osc = tv.build_oscillator_chart(snap)
     st.plotly_chart(osc, use_container_width=True, key=f"{key_prefix}_osc_chart")
 
+    st.markdown("### Livelli e valori numerici")
+    rows = tech.numeric_summary(snap)
+    if rows:
+        st.dataframe(
+            pd.DataFrame(rows, columns=["Indicatore", "Valore"]),
+            use_container_width=True, hide_index=True, key=f"{key_prefix}_numeric_table",
+        )
+
     st.markdown("### Analisi dettagliata")
     narrative = tech.build_narrative(snap, entry_price=entry_price)
     if narrative:
@@ -128,6 +136,35 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         st.info(narrative["synthesis"])
     else:
         st.info("Nessun segnale rilevante al momento.")
+
+    st.markdown("### \U0001F3AF Piano operativo")
+    st.caption(
+        "Uno schema di ingresso/stop/target costruito solo su livelli tecnici oggettivi (supporti, "
+        "resistenze, ATR, obiettivi di figura) — un modello da adattare, non un ordine pronto. "
+        "Dimensionamento della posizione e tolleranza al rischio restano scelte tue."
+    )
+    plan = tech.trade_plan(snap)
+    if not plan or plan["bias"] == "nessun_setup":
+        st.info(
+            "Il quadro tecnico attuale non è abbastanza direzionale da costruire un piano operativo "
+            "(punteggio tecnico vicino allo zero): aspettare un'impostazione più chiara è spesso la "
+            "scelta più prudente."
+        )
+    else:
+        bias_kind = "ok" if plan["bias"] == "long" else "bad"
+        p1, p2, p3, p4 = st.columns(4)
+        p1.markdown(f"**Impostazione**<br>{badge(plan['bias'].upper(), bias_kind)}", unsafe_allow_html=True)
+        p2.metric("Ingresso", f"{plan['entry']:,.2f}")
+        p3.metric("Stop", f"{plan['stop']:,.2f}", f"{plan['stop'] - plan['entry']:+.2f}")
+        p4.metric("Target", f"{plan['target']:,.2f}", f"{plan['target'] - plan['entry']:+.2f}")
+        rr = plan.get("risk_reward")
+        rr_kind = "ok" if rr and rr >= 2 else ("warn" if rr and rr >= 1 else "bad")
+        st.markdown(
+            f"Rapporto rischio/rendimento: {badge(f'{rr:.2f}' if rr else 'n/d', rr_kind)} "
+            f"(rischio {plan['risk']:.2f}, rendimento potenziale {plan['reward']:.2f})",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Stop basato su: {plan['stop_basis']}. Target basato su: {plan['target_basis']}.")
 
     with st.expander("News recenti"):
         news = dp.get_news(symbol, limit=6)

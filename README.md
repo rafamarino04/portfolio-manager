@@ -175,19 +175,38 @@ le figure di prezzo (doppio massimo/minimo, triangoli) più recenti, con
 l'obiettivo di prezzo calcolato secondo le tecniche di misurazione
 standard (altezza della figura proiettata dal punto di rottura).
 
-Il risultato non è un elenco di indicatori messi in fila: è diviso in
-sezioni — Trend e struttura del prezzo, Medie mobili e volatilità,
-Momentum e oscillatori, Pattern grafici e candlestick — ognuna con un
-paragrafo che spiega cosa significa, non solo il numero. In fondo trovi
-una **Sintesi**: un paragrafo che ragiona su quanto le sezioni concordano
-o si contraddicono tra loro (es. trend rialzista ma momentum già in
-ipercomprato) e indica i livelli di prezzo da monitorare. Ogni riga è
-generata da regole esplicite, non da un modello black-box: puoi sempre
-risalire al perché di ogni frase. I tre orizzonti temporali (breve/medio/
-lungo) usano parametri diversi — oscillatori più corti e sensibili per il
-trading di breve, dati settimanali per l'investimento di lungo periodo —
-così puoi cambiare la profondità dell'analisi in base al tipo di
-decisione senza lasciare la pagina.
+Sotto il grafico trovi prima una tabella con **tutti i valori numerici**
+calcolati — supporti, resistenze, valore delle medie mobili, delle bande
+di Bollinger, di RSI/Stocastico/MACD/Williams %R, dell'ATR e degli
+eventuali obiettivi di prezzo delle figure — per chi vuole i dati grezzi
+senza leggere il testo.
+
+Poi l'analisi vera e propria: non un elenco di indicatori messi in fila,
+ma sezioni separate — Trend e struttura del prezzo, Medie mobili e
+volatilità, Momentum e oscillatori, Pattern grafici e candlestick —
+ognuna con un paragrafo che spiega cosa significa, non solo il numero. In
+fondo trovi una **Sintesi**: un paragrafo che ragiona su quanto le
+sezioni concordano o si contraddicono tra loro (es. trend rialzista ma
+momentum già in ipercomprato) e indica i livelli di prezzo da monitorare.
+Ogni riga è generata da regole esplicite, non da un modello black-box:
+puoi sempre risalire al perché di ogni frase.
+
+Infine un **Piano operativo**: uno schema di ingresso/stop/target
+pensato per chi usa l'analisi anche per il trading di breve periodo.
+Usa il punteggio tecnico per stabilire un'impostazione (long/short/nessun
+setup), lo stop è ancorato al supporto o resistenza più vicini (con un
+margine dato dall'ATR, la volatilità media recente) o, se non c'è un
+livello vicino, a un multiplo dell'ATR; il target è il livello opposto
+più vicino o l'obiettivo di una figura di prezzo rilevata; viene mostrato
+anche il rapporto rischio/rendimento. È uno schema costruito su regole
+tecniche oggettive, non un ordine pronto da eseguire — il dimensionamento
+della posizione resta una scelta tua.
+
+I tre orizzonti temporali (breve/medio/lungo) usano parametri diversi —
+oscillatori più corti e sensibili per il trading di breve, dati
+settimanali per l'investimento di lungo periodo — così puoi cambiare la
+profondità dell'analisi (grafico, sezioni e piano operativo insieme) in
+base al tipo di decisione, senza lasciare la pagina.
 
 ## Sviluppo/test in locale (opzionale)
 
@@ -221,3 +240,10 @@ streamlit run app.py
 - Gli avvisi sui Preferiti sono solo in-app: nessuna email/notifica push in
   questa versione. Vanno controllati aprendo la pagina e premendo
   "Scansiona preferiti" — non è un servizio che gira in background.
+- Il Piano operativo usa l'ATR (Average True Range), un indicatore
+  standard di volatilità non presente nei capitoli del manuale di Murphy
+  usati per il resto del modulo — è stato aggiunto perché necessario per
+  calibrare stop e target in modo proporzionato alla volatilità reale del
+  titolo. Stop e target sono un punto di partenza tecnico, non tengono
+  conto di commissioni, slippage, orari di mercato o della tua gestione
+  del rischio complessiva.
