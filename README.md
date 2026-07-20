@@ -212,70 +212,70 @@ base al tipo di decisione, senza lasciare la pagina.
 
 ## Analisi Fondamentale: come funziona
 
-La pagina **Analisi Fondamentale** risponde a una domanda diversa da
-quella tecnica: come sta lavorando l'azienda a livello di numeri, e quali
-sono i prospetti futuri — non il movimento del prezzo. È volutamente
+La pagina **Analisi Fondamentale** risponde a tre domande concrete su un
+singolo titolo — quelle che contano davvero per farsi un'idea
+d'investimento, non un elenco di metriche fine a se stesso. È volutamente
 limitata ai singoli titoli: le ETF non hanno un bilancio proprio, quindi
 richiederebbero un'altra logica (prevista come sviluppo successivo).
 
-L'analisi è organizzata su **sei assi**, ciascuno con un paragrafo e un
-verdetto (i primi quattro contribuiscono anche a un punteggio composito,
-visibile in alto nella pagina):
+Deliberatamente **non** include stime di fair value costruite su
+assunzioni proprie (formule alla Graham, prezzi impliciti da una
+reversione di multiplo su una crescita attesa indovinata): quel tipo di
+calcolo trasforma un'assunzione in un numero dall'aria precisa, senza
+aggiungere affidabilità reale. Dove serve un riferimento di prezzo
+esterno si usa il **consensus reale degli analisti** che coprono il
+titolo (target price e raccomandazione aggregata, dato di mercato preso
+da Yahoo Finance, non una stima di questa app) — sempre mostrato insieme
+al numero di analisti che lo compongono, per poter giudicare quanto
+pesarlo.
 
-- **Crescita e profittabilità**: ricavi, EBITDA (e margine EBITDA%),
-  utile netto — non solo l'ultimo dato ma la classificazione del ritmo di
-  crescita sull'intero storico disponibile (in accelerazione/decelerazione/
-  stabile) e l'espansione o contrazione dei margini nel tempo. Tabella
-  completa (con numeri finalmente leggibili: valuta, scala K/Mln/Mld,
-  punti percentuali) e grafico ricavi/EBITDA/utile netto per periodo.
-- **Rendimento sul capitale e creazione di valore**: ROIC (rendimento sul
-  capitale investito, comprende anche il debito) confrontato con il WACC
-  (costo medio ponderato del capitale, esteso dal CAPM esistente con un
-  costo del debito stimato) — il test standard in finanza aziendale per
-  capire se un'azienda crea o distrugge valore, non solo "ha un ROE alto".
-- **Solidità finanziaria e qualità degli utili**: leva vista con la
-  metrica giusta (debito netto/EBITDA, non solo debito/equity), copertura
-  degli interessi, current ratio, e un confronto pluriennale tra utile
-  netto e free cash flow che segnala (non certifica) un possibile problema
-  di qualità degli utili se il primo supera sistematicamente il secondo.
-- **Valutazione**: multipli attuali (P/E, Fwd P/E, P/B, PEG), un P/E
-  storico ricostruito dai prezzi e dagli utili trailing degli ultimi 3
-  anni (per dire se il titolo tratta caro o a buon mercato *rispetto alla
-  propria storia*), più due **ancore di prezzo** che traducono il
-  giudizio in un numero: il prezzo implicito se il multiplo tornasse alla
-  propria mediana storica applicato all'EPS atteso, e il valore implicito
-  dalla formula di Graham (euristica classica, non un DCF). La media dei
-  due dà un rendimento implicito — non una previsione, ma un modo
-  esplicito per capire quanto ottimismo è già scontato nel prezzo attuale,
-  la domanda che serve davvero per decidere se un titolo conviene.
-- **Contesto settoriale e competitivo**: un ETF di settore (SPDR, lo
-  standard di mercato) come proxy per il trend del settore nel suo
-  complesso, la forza relativa del titolo rispetto al settore su più
-  orizzonti, e — se indichi dei concorrenti nella pagina — un confronto
-  diretto fianco a fianco su multipli, margini e crescita.
-- **Notizie e prospettive future**: le news più recenti classificate per
-  tono (positivo/negativo/neutro) con un semplice filtro per parole chiave
-  in inglese, più il contesto macro generale (tassi, clima di mercato) già
-  calcolato altrove nell'app.
+- **È profittevole?** Ricavi, EBITDA (e margine EBITDA%), utile netto sui
+  dati storici reali, e — non solo l'ultimo dato — se l'azienda è stata
+  in utile in modo coerente su tutti i periodi disponibili o solo a
+  tratti. Tabella completa (con numeri finalmente leggibili: valuta,
+  scala K/Mln/Mld, punti percentuali) e grafico ricavi/EBITDA/utile netto
+  per periodo, più i dati trimestrali grezzi in un pannello a parte.
+- **È sostenibile nel tempo?** Il margine netto si sta espandendo o
+  comprimendo nel tempo; il ROIC (rendimento sul capitale investito)
+  confrontato con il WACC (costo del capitale, via CAPM) — il test
+  standard in finanza aziendale per capire se l'azienda crea o distrugge
+  valore economico, non solo "ha un ROE alto"; la leva (debito
+  netto/EBITDA) e se sta aumentando o calando nel tempo; copertura degli
+  interessi e liquidità a breve; e un confronto pluriennale tra utile
+  netto e free cash flow che segnala (non certifica) un possibile
+  problema di qualità degli utili se il primo supera sistematicamente il
+  secondo.
+- **Ha buone prospettive, anche se i dati storici dicono il contrario?**
+  Qui i numeri passati da soli non bastano: si guarda al P/E attuale
+  rispetto al proprio range storico (solo per capire quanto ottimismo
+  potrebbe già essere nel prezzo, non per calcolare un target), al target
+  price e alla raccomandazione aggregata di chi segue davvero il titolo,
+  al trend del settore (ETF di settore come proxy) e alla forza relativa
+  del titolo rispetto al settore, al confronto diretto con eventuali
+  concorrenti indicati, e al tono delle news recenti. Quando questo
+  quadro va in una direzione diversa dai numeri storici — un'azienda con
+  numeri deboli ma settore/analisti/sentiment in miglioramento, o
+  viceversa — la sintesi lo segnala esplicitamente invece di far finta
+  che tutto converga sempre.
 
-In fondo, una **Sintesi** che riporta il punteggio composito e ragiona su
-quanto i quattro assi principali raccontano la stessa storia o si
-contraddicono (es. crescita solida ma valutazione già elevata, oppure
-ROIC sotto il WACC nonostante una buona solidità finanziaria).
+In fondo, una **Sintesi** che risponde in chiaro alle tre domande (sì/no/
+parzialmente) e segnala esplicitamente quando le prospettive contraddicono
+i numeri storici.
 
-**Punteggio composito**: ogni asse produce un sotto-punteggio da -1 a +1
-con una motivazione esplicita (mai una scatola nera); i quattro assi
-principali vengono combinati con pesi dichiarati (crescita 25%, rendimento
-sul capitale 30%, solidità finanziaria 20%, valutazione 25%), che si
-ridistribuiscono automaticamente se un asse non è calcolabile per dati
-mancanti. È pensato come base per il futuro motore di punteggio
-multi-fattoriale che unirà anche l'analisi tecnica e quella macro.
+**Punteggio composito**: ogni domanda produce un sotto-punteggio da -1 a
++1 con una motivazione esplicita (mai una scatola nera); le tre domande
+si combinano con pesi dichiarati (profittabilità 35%, sostenibilità 35%,
+prospettive 30%), che si ridistribuiscono automaticamente se una manca
+per dati insufficienti. È volutamente una **lettura secondaria** — le tre
+risposte in chiaro restano l'output principale — pensata come base per un
+futuro motore di punteggio multi-fattoriale che unirà anche l'analisi
+tecnica e quella macro.
 
 **Export Excel**: il bottone "Scarica Excel" in alto genera un workbook
-con sintesi, bilancio annuale (con margini calcolati da formule Excel
-leggibili e ricontrollabili, non numeri congelati), ratio/punteggio e
-confronto concorrenti — utile per archiviare le proprie analisi o
-incollarle in un modello più ampio.
+con sintesi (incluso il consensus analisti), bilancio annuale (con
+margini calcolati da formule Excel leggibili e ricontrollabili, non
+numeri congelati), ratio/punteggio e confronto concorrenti — utile per
+archiviare le proprie analisi o incollarle in un modello più ampio.
 
 ## Sviluppo/test in locale (opzionale)
 
@@ -325,28 +325,27 @@ streamlit run app.py
   risultare "n/d" anche quando l'azienda esiste ed è quotata — in quel
   caso ROIC, WACC, copertura interessi o current ratio non vengono
   mostrati invece di essere stimati su dati incompleti.
-- Il P/E storico (percentile di valutazione) richiede almeno 3 anni di
-  prezzi settimanali e diversi trimestri di EPS: se il titolo è quotato
-  da poco o ha una copertura Yahoo Finance scarsa, questa parte della
-  sezione Valutazione non viene mostrata. Il WACC usa un costo del debito
-  stimato da interessi passivi/debito totale quando disponibile, altrimenti
-  un proxy generico (tasso privo di rischio + spread di credito standard),
-  dichiarato in pagina.
+- Il P/E storico (usato nella domanda "ha buone prospettive?" solo come
+  contesto, non come target di prezzo) richiede almeno 3 anni di prezzi
+  settimanali e diversi trimestri di EPS: se il titolo è quotato da poco o
+  ha una copertura Yahoo Finance scarsa, questa parte del testo non viene
+  mostrata. Il WACC usa un costo del debito stimato da interessi
+  passivi/debito totale quando disponibile, altrimenti un proxy generico
+  (tasso privo di rischio + spread di credito standard), dichiarato in
+  pagina.
 - Il contesto settoriale usa ETF di settore SPDR, che coprono il mercato
   USA: per titoli non statunitensi è un proxy imperfetto del settore
   reale del titolo, utile come indicazione generale più che come
   benchmark esatto.
-- Le due ancore di prezzo (reversione del multiplo, formula di Graham)
-  sono euristiche di controllo rapido, non un fair value rigoroso: la
-  formula di Graham in particolare è molto sensibile alla crescita attesa
-  usata come input (qui stimata dal CAGR storico dell'EPS, con un tetto al
-  15% per evitare risultati assurdi su titoli ad altissima crescita) e usa
-  il rendimento del Treasury 10 anni al posto di un rendimento
-  obbligazionario corporate AAA, non disponibile gratuitamente. Nessuna
-  delle due regole di scoring in questa sezione è stata verificata con un
-  backtest storico: sono regole costruite per ragionevolezza economica, da
-  trattare come diagnostica strutturata, non come segnale operativo
-  validato.
+- Il target price e la raccomandazione aggregata degli analisti (usati
+  nella domanda "ha buone prospettive?") sono un consensus reale ma non
+  infallibile: riflettono le stime di chi copre il titolo in quel momento,
+  possono essere lente ad aggiornarsi, e con pochi analisti (l'app lo
+  segnala) vanno pesate molto meno. Nessuna delle regole di punteggio di
+  questa sezione è stata verificata con un backtest storico: sono regole
+  costruite per ragionevolezza economica su dati reali, non un segnale
+  operativo validato — vanno trattate come una diagnostica strutturata,
+  non come un rating.
 - Il sentiment sulle news è un filtro per parole chiave in inglese, non
   un modello linguistico: può classificare male titoli ambigui o ironici
   ed è pensato come primo orientamento, da verificare leggendo gli

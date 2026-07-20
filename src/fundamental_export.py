@@ -136,15 +136,14 @@ def _write_ratio_sheet(ws, symbol: str, sections: dict, breakdown: dict, currenc
     ws.cell(row=1, column=1, value=f"Ratio e punteggio fondamentale — {symbol}").font = _title_font(14)
 
     row = 3
-    ws.cell(row=row, column=1, value="Rendimento sul capitale e costo del capitale").font = _title_font(11)
+    ws.cell(row=row, column=1, value="Sostenibilità: rendimento sul capitale e costo del capitale").font = _title_font(11)
     row += 1
-    cap = sections.get("capital_returns", {})
+    sus = sections.get("sustainability", {})
     pairs = [
-        ("ROE (%)", cap.get("roe_pct")),
-        ("ROIC (%)", cap.get("roic")),
-        ("WACC (%)", cap.get("wacc")),
+        ("ROIC (%)", sus.get("roic")),
+        ("WACC (%)", sus.get("wacc")),
         ("Spread ROIC - WACC (p.p.)",
-         (cap.get("roic") - cap.get("wacc")) if cap.get("roic") is not None and cap.get("wacc") is not None else None),
+         (sus.get("roic") - sus.get("wacc")) if sus.get("roic") is not None and sus.get("wacc") is not None else None),
     ]
     for label, val in pairs:
         ws.cell(row=row, column=1, value=label).font = _label_font()
@@ -154,13 +153,11 @@ def _write_ratio_sheet(ws, symbol: str, sections: dict, breakdown: dict, currenc
         row += 1
 
     row += 1
-    ws.cell(row=row, column=1, value="Solidità finanziaria e qualità degli utili").font = _title_font(11)
+    ws.cell(row=row, column=1, value="Sostenibilità: qualità degli utili").font = _title_font(11)
     row += 1
-    fh = sections.get("financial_health", {})
-    quality = fh.get("quality", {}) or {}
+    quality = sus.get("quality", {}) or {}
     ratio_pairs = [
-        ("Debito netto / EBITDA (x)", None), ("Copertura interessi (x)", None),
-        ("Current ratio (x)", None), ("FCF medio / Utile netto medio (%)", quality.get("avg_ratio")),
+        ("FCF medio / Utile netto medio (%)", quality.get("avg_ratio")),
     ]
     for label, val in ratio_pairs:
         ws.cell(row=row, column=1, value=label).font = _label_font()
@@ -170,16 +167,16 @@ def _write_ratio_sheet(ws, symbol: str, sections: dict, breakdown: dict, currenc
         row += 1
 
     row += 1
-    ws.cell(row=row, column=1, value="Punteggio composito per asse (scala -1 / +1)").font = _title_font(11)
+    ws.cell(row=row, column=1, value="Punteggio per domanda (scala -1 / +1)").font = _title_font(11)
     row += 1
     header_row = row
-    for j, h in enumerate(["Asse di analisi", "Punteggio", "Peso"]):
+    for j, h in enumerate(["Domanda", "Punteggio", "Peso"]):
         ws.cell(row=header_row, column=1 + j, value=h)
     _style_header_row(ws, header_row, 3)
     row += 1
     axis_labels = {
-        "growth": "Crescita e profittabilità", "capital_returns": "Rendimento sul capitale",
-        "financial_health": "Solidità finanziaria", "valuation": "Valutazione",
+        "profitability": "È profittevole?", "sustainability": "È sostenibile nel tempo?",
+        "outlook": "Ha buone prospettive?",
     }
     first_score_row = row
     sub_scores = breakdown.get("sub_scores", {})
@@ -206,9 +203,10 @@ def _write_ratio_sheet(ws, symbol: str, sections: dict, breakdown: dict, currenc
     total_cell.number_format = "0.00"
     row += 2
     ws.cell(row=row, column=1, value=(
-        "Nota: i punteggi per asse derivano dal modello di analisi dell'app (regole esplicite "
-        "applicate ai dati di bilancio/mercato), non da una formula Excel — il totale sopra è "
-        "invece una vera media pesata, ricalcolabile se si modificano punteggio o peso di un asse."
+        "Nota: i punteggi per domanda derivano dal modello di analisi dell'app (regole esplicite "
+        "applicate a dati di bilancio/mercato reali, nessuna formula di fair value inventata), non da "
+        "una formula Excel — il totale sopra è invece una vera media pesata, ricalcolabile se si "
+        "modificano punteggio o peso di una domanda. È una lettura secondaria, non un rating."
     )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
 
     _autosize(ws, {"A": 42, "B": 16, "C": 12})
@@ -267,27 +265,37 @@ def _write_summary_sheet(ws, symbol: str, info: dict, price, sections: dict, bre
             cell.number_format = "$#,##0,,\"M\""
         row += 1
 
-    anchors = (sections.get("valuation") or {}).get("price_anchors") or {}
-    if any(v is not None for v in anchors.values()):
+    target = info.get("target_mean_price")
+    n_analysts = info.get("num_analyst_opinions")
+    if target and price and n_analysts:
         row += 1
-        ws.cell(row=row, column=1, value="Ancora di prezzo (cross-check, non un fair value da DCF)").font = _title_font(11)
+        ws.cell(row=row, column=1, value="Consensus reale degli analisti (dato di mercato, non una stima dell'app)").font = _title_font(11)
         row += 1
-        anchor_rows = [
-            ("Implicito da reversione multiplo (P/E storico x EPS atteso)", anchors.get("pe_reversion")),
-            ("Implicito da formula di Graham (euristica classica)", anchors.get("graham")),
-        ]
-        for label, val in anchor_rows:
-            ws.cell(row=row, column=1, value=label).font = _label_font()
-            cell = ws.cell(row=row, column=2, value=val)
-            cell.font = _input_font()
-            cell.number_format = "$#,##0.00;($#,##0.00);-"
-            row += 1
-        ws.cell(row=row, column=1, value="Rendimento implicito medio (%)").font = _label_font(bold=True)
-        cell = ws.cell(row=row, column=2, value=anchors.get("expected_return_pct"))
+        ws.cell(row=row, column=1, value="Target price medio").font = _label_font()
+        cell = ws.cell(row=row, column=2, value=target)
+        cell.font = _input_font()
+        cell.number_format = "$#,##0.00;($#,##0.00);-"
+        row += 1
+        ws.cell(row=row, column=1, value="Numero di analisti").font = _label_font()
+        cell = ws.cell(row=row, column=2, value=n_analysts)
+        cell.font = _input_font()
+        row += 1
+        ws.cell(row=row, column=1, value="Rendimento implicito vs prezzo attuale (%)").font = _label_font(bold=True)
+        col_price_cell = None
+        for r in range(4, row):
+            if ws.cell(row=r, column=1).value == "Prezzo":
+                col_price_cell = f"B{r}"
+                break
+        cell = ws.cell(
+            row=row, column=2,
+            value=f"=IFERROR(B{row-2}/{col_price_cell}-1,\"n/d\")" if col_price_cell else None,
+        )
         cell.font = Font(name=FONT_NAME, bold=True, color=NAVY)
         cell.number_format = "+0.0%;-0.0%"
-        if anchors.get("expected_return_pct") is not None:
-            cell.value = anchors["expected_return_pct"] / 100
+        row += 1
+        ws.cell(row=row, column=1, value=(
+            "Raccomandazione aggregata: " + str(info.get("recommendation_key") or "n/d")
+        )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
         row += 1
 
     row += 1
@@ -298,12 +306,11 @@ def _write_summary_sheet(ws, symbol: str, info: dict, price, sections: dict, bre
     tcell.number_format = "+0.00;-0.00"
     row += 2
 
-    ws.cell(row=row, column=1, value="Verdetto per asse").font = _title_font(11)
+    ws.cell(row=row, column=1, value="Le tre domande, in chiaro").font = _title_font(11)
     row += 1
     axis_labels = {
-        "growth": "Crescita e profittabilità", "capital_returns": "Rendimento sul capitale",
-        "financial_health": "Solidità finanziaria e qualità utili", "valuation": "Valutazione",
-        "sector": "Contesto settoriale", "news": "Notizie e prospettive",
+        "profitability": "È profittevole?", "sustainability": "È sostenibile nel tempo?",
+        "outlook": "Ha buone prospettive?",
     }
     for key, label in axis_labels.items():
         s = sections.get(key)
@@ -340,13 +347,13 @@ def build_excel_report(symbol: str, info: dict, price, narrative: dict) -> bytes
     _write_summary_sheet(ws_summary, symbol, info, price, sections, breakdown, narrative.get("synthesis", ""))
 
     ws_annual = wb.create_sheet("Bilancio annuale")
-    annual_hist = sections.get("growth", {}).get("annual", {})
+    annual_hist = sections.get("profitability", {}).get("annual", {})
     _write_raw_table(ws_annual, 1, annual_hist, f"Bilancio annuale — {symbol}")
 
     ws_ratio = wb.create_sheet("Ratio e punteggio")
     _write_ratio_sheet(ws_ratio, symbol, sections, breakdown, currency)
 
-    peer_table = sections.get("sector", {}).get("peer_table")
+    peer_table = sections.get("outlook", {}).get("peer_table")
     ws_peer = wb.create_sheet("Concorrenti")
     _write_peer_sheet(ws_peer, peer_table, symbol)
 

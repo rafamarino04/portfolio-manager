@@ -1,11 +1,9 @@
-"""Analisi Fondamentale: come sta lavorando l'azienda a livello di
-numeri e quali sono i prospetti futuri, per un singolo titolo — crescita
-e profittabilità, rendimento sul capitale (ROIC vs WACC), solidità
-finanziaria e qualità degli utili, valutazione (anche vs storia del
-titolo), contesto settoriale (ETF + concorrenti a scelta) e notizie con
-sentiment, più un punteggio composito e un export Excel. Le ETF/comparti
-hanno una logica diversa (nessun bilancio proprio) e restano fuori da
-questa pagina."""
+"""Analisi Fondamentale: tre domande concrete su un singolo titolo — è
+profittevole? è sostenibile nel tempo? ha buone prospettive, anche se i
+dati storici dicono il contrario? Bilancio storico, ROIC vs WACC, trend
+di settore, consensus reale degli analisti e sentiment sulle news, più
+un export Excel. Le ETF/comparti hanno una logica diversa (nessun
+bilancio proprio) e restano fuori da questa pagina."""
 import datetime as dt
 
 import plotly.graph_objects as go
@@ -28,9 +26,9 @@ if not check_password():
 
 st.title("\U0001F9FE Analisi Fondamentale")
 st.caption(
-    "Come sta lavorando l'azienda a livello di numeri, e quali sono i prospetti futuri — bilancio, "
-    "valutazione, settore e news, con una sintesi finale. Per ETF e comparti serve un'altra logica: "
-    "questa pagina resta sui singoli titoli."
+    "Tre domande su un singolo titolo: è profittevole? è sostenibile nel tempo? ha buone prospettive, "
+    "anche se i dati storici dicono il contrario? Per ETF e comparti serve un'altra logica: questa "
+    "pagina resta sui singoli titoli."
 )
 
 PEERS_PATH = "data/peers.csv"
@@ -88,24 +86,11 @@ with top2:
         key="fa_download_excel",
     )
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Prezzo", finmod.format_money(price, currency) if price else "n/d")
 c2.metric("Settore", info.get("sector") or "n/d")
 c3.metric("Capitalizzazione", finmod.format_money(info.get("market_cap"), currency))
 c4.metric("Dividend yield", f"{info.get('dividend_yield')*100:.2f}%" if info.get("dividend_yield") else "n/d")
-total_score = breakdown.get("total")
-c5.metric("Punteggio composito", f"{total_score:+.2f}" if total_score is not None else "n/d",
-          help="Media pesata dei quattro assi di analisi principali (crescita, rendimento sul "
-               "capitale, solidità finanziaria, valutazione), scala da -1 a +1.")
-
-st.caption(
-    "Punteggio per asse: " + " · ".join(
-        f"{lbl} {breakdown['sub_scores'][k]:+.2f}" for k, lbl in
-        {"growth": "Crescita", "capital_returns": "Rendimento capitale",
-         "financial_health": "Solidità", "valuation": "Valutazione"}.items()
-        if k in breakdown.get("sub_scores", {})
-    ) if breakdown.get("sub_scores") else "Punteggio non disponibile: dati insufficienti."
-)
 
 st.divider()
 
@@ -119,12 +104,12 @@ def render_section(sec: dict):
     st.write(sec["text"])
 
 
-# --- 1. Crescita e profittabilità -------------------------------------------
-growth_sec = sections["growth"]
-render_section(growth_sec)
+# --- Domanda 1: È profittevole? ----------------------------------------------
+prof_sec = sections["profitability"]
+render_section(prof_sec)
 
-annual = growth_sec.get("annual") or {}
-margins = growth_sec.get("margins") or {}
+annual = prof_sec.get("annual") or {}
+margins = prof_sec.get("margins") or {}
 ratios = finmod.compute_ratios(annual)
 table = finmod.to_display_table(annual, margins, ratios, currency)
 if not table.empty:
@@ -160,70 +145,55 @@ with st.expander("Dati trimestrali (grezzi)"):
 
 st.divider()
 
-# --- 2. Rendimento sul capitale e creazione di valore -----------------------
-render_section(sections["capital_returns"])
+# --- Domanda 2: È sostenibile nel tempo? -------------------------------------
+render_section(sections["sustainability"])
 st.divider()
 
-# --- 3. Solidità finanziaria e qualità degli utili --------------------------
-render_section(sections["financial_health"])
-st.divider()
+# --- Domanda 3: Ha buone prospettive? ----------------------------------------
+outlook_sec = sections["outlook"]
+render_section(outlook_sec)
 
-# --- 4. Valutazione ----------------------------------------------------------
-val_sec = sections["valuation"]
-render_section(val_sec)
+if outlook_sec.get("peer_table") is not None and not outlook_sec["peer_table"].empty:
+    st.caption("Confronto con i concorrenti indicati:")
+    st.dataframe(outlook_sec["peer_table"], use_container_width=True, hide_index=True)
 
-anchors = val_sec.get("price_anchors") or {}
-if any(v is not None for v in anchors.values()):
-    ac1, ac2, ac3, ac4 = st.columns(4)
-    ac1.metric("Prezzo attuale", finmod.format_money(price, currency) if price else "n/d")
-    ac2.metric("Implicito (reversione multiplo)",
-               finmod.format_money(anchors.get("pe_reversion"), currency) if anchors.get("pe_reversion") else "n/d")
-    ac3.metric("Implicito (formula di Graham)",
-               finmod.format_money(anchors.get("graham"), currency) if anchors.get("graham") else "n/d")
-    ac4.metric("Rendimento implicito medio",
-               finmod.format_pct(anchors.get("expected_return_pct"), signed=True) if anchors.get("expected_return_pct") is not None else "n/d")
-    st.caption(
-        "Le due ancore sono cross-check indipendenti (reversione del multiplo storico e formula di "
-        "Graham), non un fair value stimato con un DCF: vanno lette come ordini di grandezza per capire "
-        "quanto ottimismo è già nel prezzo, non come un target preciso."
-    )
+news_items = outlook_sec.get("news_items", [])
+if news_items:
+    with st.expander("News recenti considerate"):
+        for item in news_items:
+            s = item.get("sentiment", 0)
+            kind = "ok" if s > 0 else ("bad" if s < 0 else "info")
+            tag = "positiva" if s > 0 else ("negativa" if s < 0 else "neutra")
+            title = item.get("title")
+            link = item.get("link")
+            publisher = item.get("publisher") or ""
+            testo = f"[{title}]({link})" if link else (title or "")
+            st.markdown(f"{badge(tag, kind)} {testo} · *{publisher}*", unsafe_allow_html=True)
 
 st.divider()
-
-# --- 5. Contesto settoriale e competitivo ------------------------------------
-sec_sec = sections["sector"]
-render_section(sec_sec)
-if sec_sec.get("peer_table") is not None and not sec_sec["peer_table"].empty:
-    st.dataframe(sec_sec["peer_table"], use_container_width=True, hide_index=True)
-
-st.divider()
-
-# --- 6. Notizie e prospettive future ------------------------------------------
-news_sec = sections["news"]
-render_section(news_sec)
-for item in news_sec.get("news_items", []):
-    s = item.get("sentiment", 0)
-    kind = "ok" if s > 0 else ("bad" if s < 0 else "info")
-    tag = "positiva" if s > 0 else ("negativa" if s < 0 else "neutra")
-    title = item.get("title")
-    link = item.get("link")
-    publisher = item.get("publisher") or ""
-    testo = f"[{title}]({link})" if link else (title or "")
-    st.markdown(f"{badge(tag, kind)} {testo} · *{publisher}*", unsafe_allow_html=True)
 
 st.markdown("#### \U0001F9ED Sintesi")
 st.info(narrative["synthesis"])
 
+with st.expander("Dettaglio punteggio (lettura secondaria, non un rating)"):
+    if breakdown.get("sub_scores"):
+        labels = {"profitability": "È profittevole", "sustainability": "È sostenibile", "outlook": "Ha buone prospettive"}
+        st.caption(" · ".join(f"{labels[k]}: {v:+.2f}" for k, v in breakdown["sub_scores"].items()))
+        total = breakdown.get("total")
+        if total is not None:
+            st.caption(f"Punteggio composito: {total:+.2f} (scala -1/+1, media pesata delle tre domande).")
+    else:
+        st.caption("Punteggio non disponibile: dati insufficienti.")
+
 disclaimer(
     "L'analisi fondamentale qui presentata usa dati pubblici (Yahoo Finance) e regole esplicite di "
-    "interpretazione — non un modello proprietario né dati di ricerca a pagamento. La valutazione è "
-    "relativa (multipli confrontati con la storia del titolo stesso, tramite un P/E storico ricostruito "
-    "dai prezzi e dagli utili passati, e con eventuali concorrenti indicati), non un fair value stimato "
-    "con un DCF: le assunzioni di crescita di lungo periodo richiederebbero dati che non sono disponibili "
-    "gratuitamente. Il ROIC/WACC e i ratio di leva/liquidità dipendono dalla disponibilità e dalla "
-    "qualità delle etichette dei prospetti contabili su Yahoo Finance, che non è garantita per tutti i "
-    "titoli (specialmente non statunitensi o a piccola capitalizzazione). Il sentiment sulle news è una "
+    "interpretazione — non un modello proprietario né dati di ricerca a pagamento, e nessuna stima di "
+    "fair value costruita su assunzioni proprie: dove serve un riferimento di prezzo esterno si usa il "
+    "consensus reale degli analisti che coprono il titolo, sempre mostrato insieme al numero di analisti "
+    "che lo compongono. Il ROIC/WACC e i ratio di bilancio dipendono dalla disponibilità e dalla qualità "
+    "delle etichette dei prospetti contabili su Yahoo Finance, che non è garantita per tutti i titoli "
+    "(specialmente non statunitensi o a piccola capitalizzazione). Il sentiment sulle news è una "
     "classificazione automatica per parole chiave, da verificare leggendo gli articoli. Il punteggio "
-    "composito è un indicatore sintetico basato su regole dichiarate, non un rating professionale. Non è "
-    "consulenza finanziaria personalizzata."
+    "composito è una lettura secondaria basata su regole dichiarate, non un rating professionale né un "
+    "segnale validato da un backtest. Non è consulenza finanziaria personalizzata."
 )

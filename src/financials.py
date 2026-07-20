@@ -392,38 +392,6 @@ def historical_multiple_band(symbol: str, years: int = 3) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Ancora di prezzo — due cross-check di prezzo "implicito", non una stima
-# di fair value rigorosa (richiederebbe un vero DCF con dati a pagamento).
-# Servono a rispondere alla domanda che conta davvero per decidere: "a
-# questo prezzo, quale rendimento sto implicitamente scontando?"
-# ---------------------------------------------------------------------------
-
-def implied_price_multiple_reversion(historical_median_multiple: float | None, eps: float | None) -> float | None:
-    """Prezzo implicito se il multiplo (P/E) tornasse alla propria mediana
-    storica, applicato all'EPS forward (o trailing se il forward non è
-    disponibile). Non è una previsione: è "cosa dovrebbe fare il prezzo
-    perché il multiplo torni nella norma della sua storia recente"."""
-    if historical_median_multiple is None or eps is None or eps <= 0:
-        return None
-    return historical_median_multiple * eps
-
-
-def graham_intrinsic_value(eps: float | None, growth_pct: float | None, bond_yield_pct: float | None) -> float | None:
-    """Formula di Graham (The Intelligent Investor, versione rivista):
-    V = EPS x (8.5 + 2g) x 4.4 / Y, dove g è la crescita attesa (%) e Y il
-    rendimento di un'obbligazione di alta qualità (qui: Treasury 10 anni
-    live, in assenza di un rendimento corporate AAA gratuito — un'
-    approssimazione dichiarata). g è limitata a un intervallo 0-15% per
-    evitare risultati assurdi quando si estrapola la crescita storica di
-    un titolo ad altissima crescita. È un euristica di controllo rapido,
-    non una valutazione rigorosa: molto sensibile all'assunzione di g."""
-    if eps is None or eps <= 0 or growth_pct is None or bond_yield_pct is None or bond_yield_pct <= 0:
-        return None
-    g = max(0.0, min(growth_pct, 15.0))
-    return eps * (8.5 + 2 * g) * 4.4 / bond_yield_pct
-
-
-# ---------------------------------------------------------------------------
 # Formattazione numerica — il problema segnalato: numeri grezzi senza
 # punti/unità di misura non si leggono. Tutta la UI passa da qui.
 # ---------------------------------------------------------------------------
