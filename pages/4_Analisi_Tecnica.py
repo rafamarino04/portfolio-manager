@@ -1,8 +1,11 @@
-"""Analisi Titoli: hub decisionale sui singoli titoli. Tre sezioni —
+"""Analisi Tecnica: hub decisionale sui singoli titoli. Tre sezioni —
 Portafoglio (i titoli che hai già, senza doverli ricercare), Preferiti
 (una watchlist con segnali automatici) e Cerca (ricerca libera) — tutte
-appoggiate sullo stesso motore di analisi tecnica (src/technical.py),
-contestualizzato rispetto al tuo prezzo di carico o di riferimento."""
+appoggiate sullo stesso motore di analisi tecnica (src/technical.py):
+trend, medie mobili/volatilità, momentum e pattern trattati come sezioni
+separate di un vero report, con una sintesi finale che ragiona su quanto
+concordano o si contraddicono tra loro, contestualizzata rispetto al
+prezzo di carico o di riferimento."""
 import datetime as dt
 import os
 
@@ -20,16 +23,17 @@ from src.auth import check_password
 from src.portfolio import CASH_CATEGORY
 from src.theme import apply_theme, badge, disclaimer
 
-st.set_page_config(page_title="Analisi Titoli", page_icon="\U0001F50D", layout="wide")
+st.set_page_config(page_title="Analisi Tecnica", page_icon="\U0001F4C8", layout="wide")
 apply_theme()
 
 if not check_password():
     st.stop()
 
-st.title("\U0001F50D Analisi Titoli")
+st.title("\U0001F4C8 Analisi Tecnica")
 st.caption(
-    "Portafoglio e Preferiti sono già pronti da analizzare, senza doverli ricercare. "
-    "Usa Cerca per qualsiasi altro titolo."
+    "Portafoglio e Preferiti sono già pronti da analizzare, senza doverli ricercare — usa Cerca "
+    "per qualsiasi altro titolo. L'analisi è divisa per famiglia di indicatori, con una sintesi "
+    "finale che ragiona su quanto concordano tra loro."
 )
 
 PORTFOLIO_PATH = "data/portfolio.csv"
@@ -56,7 +60,8 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
                             entry_label: str = "prezzo di riferimento", default_horizon: str = "medio"):
     """Blocco completo per un ticker: intestazione, orizzonte temporale,
     grafico+oscillatori, contesto sul prezzo di ingresso (se fornito) e
-    valutazione testuale. Riutilizzato identico dalle tre sezioni."""
+    analisi sezionata con sintesi finale. Riutilizzato identico dalle tre
+    sezioni della pagina."""
     info = dp.get_info(symbol)
     st.subheader(f"{info.get('name', symbol)} ({symbol})")
 
@@ -108,11 +113,19 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
     osc = tv.build_oscillator_chart(snap)
     st.plotly_chart(osc, use_container_width=True, key=f"{key_prefix}_osc_chart")
 
-    st.markdown("**Valutazione tecnica**")
-    lines = tech.interpret(snap)
-    if lines:
-        for line in lines:
-            st.markdown(f"- {line}")
+    st.markdown("### Analisi dettagliata")
+    narrative = tech.build_narrative(snap, entry_price=entry_price)
+    if narrative:
+        for sec in narrative["sections"]:
+            with st.container(border=True):
+                st.markdown(
+                    f"**{sec['icon']} {sec['title']}** "
+                    f"{badge(tech.VERDICT_LABELS[sec['verdict']], tech.VERDICT_BADGE_KIND[sec['verdict']])}",
+                    unsafe_allow_html=True,
+                )
+                st.write(sec["text"])
+        st.markdown("#### \U0001F9ED Sintesi")
+        st.info(narrative["synthesis"])
     else:
         st.info("Nessun segnale rilevante al momento.")
 
