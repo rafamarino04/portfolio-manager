@@ -1,8 +1,11 @@
 """Analisi Fondamentale: come sta lavorando l'azienda a livello di
-numeri e quali sono i prospetti futuri, per un singolo titolo — bilancio
-storico, qualità/valutazione, contesto settoriale (ETF + concorrenti a
-scelta) e notizie con sentiment. Le ETF/comparti hanno una logica diversa
-(nessun bilancio proprio) e restano fuori da questa pagina."""
+numeri e quali sono i prospetti futuri, per un singolo titolo — crescita
+e profittabilità, rendimento sul capitale (ROIC vs WACC), solidità
+finanziaria e qualità degli utili, valutazione (anche vs storia del
+titolo), contesto settoriale (ETF + concorrenti a scelta) e notizie con
+sentiment, più un punteggio composito e un export Excel. Le ETF/comparti
+hanno una logica diversa (nessun bilancio proprio) e restano fuori da
+questa pagina."""
 import datetime as dt
 
 import plotly.graph_objects as go
@@ -11,6 +14,7 @@ import streamlit as st
 from src import data_provider as dp
 from src import financials as finmod
 from src import fundamental as fnd
+from src import fundamental_export as fexp
 from src import github_sync
 from src import peers as pr
 from src.auth import check_password
@@ -68,49 +72,87 @@ with st.spinner("Analisi fondamentale in corso..."):
     price = dp.get_current_price(symbol)
     narrative = fnd.build_fundamental_narrative(symbol, peers=peers or None)
 
-st.subheader(f"{info.get('name', symbol)} ({symbol})")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Prezzo", f"{price:,.2f}" if price else "n/d")
-c2.metric("Settore", info.get("sector") or "n/d")
-c3.metric("Capitalizzazione", f"{info.get('market_cap'):,.0f}" if info.get("market_cap") else "n/d")
-c4.metric("Dividend yield", f"{info.get('dividend_yield')*100:.2f}%" if info.get("dividend_yield") else "n/d")
-
+currency = info.get("currency")
 sections = {s["key"]: s for s in narrative["sections"]}
+breakdown = narrative.get("score_breakdown", {})
 
-# --- Numeri di bilancio -----------------------------------------------------
-fin_sec = sections["financials"]
-st.markdown(
-    f"### {fin_sec['icon']} {fin_sec['title']} "
-    f"{badge(fnd.FUND_VERDICT_LABELS[fin_sec['verdict']], fnd.FUND_VERDICT_BADGE_KIND[fin_sec['verdict']])}",
-    unsafe_allow_html=True,
+top1, top2 = st.columns([5, 1])
+with top1:
+    st.subheader(f"{info.get('name', symbol)} ({symbol})")
+with top2:
+    excel_bytes = fexp.build_excel_report(symbol, info, price, narrative)
+    st.download_button(
+        "\U0001F4E5 Scarica Excel", data=excel_bytes,
+        file_name=f"analisi_fondamentale_{symbol}_{dt.date.today().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="fa_download_excel",
+    )
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Prezzo", finmod.format_money(price, currency) if price else "n/d")
+c2.metric("Settore", info.get("sector") or "n/d")
+c3.metric("Capitalizzazione", finmod.format_money(info.get("market_cap"), currency))
+c4.metric("Dividend yield", f"{info.get('dividend_yield')*100:.2f}%" if info.get("dividend_yield") else "n/d")
+total_score = breakdown.get("total")
+c5.metric("Punteggio composito", f"{total_score:+.2f}" if total_score is not None else "n/d",
+          help="Media pesata dei quattro assi di analisi principali (crescita, rendimento sul "
+               "capitale, solidità finanziaria, valutazione), scala da -1 a +1.")
+
+st.caption(
+    "Punteggio per asse: " + " · ".join(
+        f"{lbl} {breakdown['sub_scores'][k]:+.2f}" for k, lbl in
+        {"growth": "Crescita", "capital_returns": "Rendimento capitale",
+         "financial_health": "Solidità", "valuation": "Valutazione"}.items()
+        if k in breakdown.get("sub_scores", {})
+    ) if breakdown.get("sub_scores") else "Punteggio non disponibile: dati insufficienti."
 )
-st.write(fin_sec["text"])
 
-annual = fin_sec.get("annual") or {}
-margins = fin_sec.get("margins") or {}
-table = finmod.to_display_table(annual, margins)
+st.divider()
+
+
+def render_section(sec: dict):
+    st.markdown(
+        f"### {sec['icon']} {sec['title']} "
+        f"{badge(fnd.FUND_VERDICT_LABELS[sec['verdict']], fnd.FUND_VERDICT_BADGE_KIND[sec['verdict']])}",
+        unsafe_allow_html=True,
+    )
+    st.write(sec["text"])
+
+
+# --- 1. Crescita e profittabilità -------------------------------------------
+growth_sec = sections["growth"]
+render_section(growth_sec)
+
+annual = growth_sec.get("annual") or {}
+margins = growth_sec.get("margins") or {}
+ratios = finmod.compute_ratios(annual)
+table = finmod.to_display_table(annual, margins, ratios, currency)
 if not table.empty:
     st.dataframe(table, use_container_width=True)
 
-    rev, ni = annual.get("revenue"), annual.get("net_income")
-    if rev is not None and ni is not None:
-        aligned_rev, aligned_ni = rev.align(ni, join="inner")
-        if not aligned_rev.empty:
-            labels = [d.strftime("%Y") if hasattr(d, "strftime") else str(d) for d in aligned_rev.index]
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=labels, y=aligned_rev.values, name="Ricavi", marker_color=NAVY))
-            fig.add_trace(go.Bar(x=labels, y=aligned_ni.values, name="Utile netto",
-                                  marker_color=GOLD))
-            fig.update_layout(barmode="group", height=350, title="Ricavi e utile netto per periodo",
-                               legend=dict(orientation="h", yanchor="bottom", y=1.02))
-            st.plotly_chart(fig, use_container_width=True, key="fa_financials_chart")
+    rev, ebitda, ni = annual.get("revenue"), annual.get("ebitda"), annual.get("net_income")
+    fig = go.Figure()
+    if rev is not None:
+        labels = [d.strftime("%Y") if hasattr(d, "strftime") else str(d) for d in rev.index]
+        fig.add_trace(go.Bar(x=labels, y=rev.values, name="Ricavi", marker_color=NAVY))
+    if ebitda is not None:
+        labels = [d.strftime("%Y") if hasattr(d, "strftime") else str(d) for d in ebitda.index]
+        fig.add_trace(go.Bar(x=labels, y=ebitda.values, name="EBITDA", marker_color=GOLD))
+    if ni is not None:
+        labels = [d.strftime("%Y") if hasattr(d, "strftime") else str(d) for d in ni.index]
+        fig.add_trace(go.Bar(x=labels, y=ni.values, name="Utile netto", marker_color="#4C7A9E"))
+    if fig.data:
+        fig.update_layout(barmode="group", height=350, title="Ricavi, EBITDA e utile netto per periodo",
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig, use_container_width=True, key="fa_financials_chart")
 else:
     st.info("Nessun prospetto di bilancio annuale disponibile per questo titolo su Yahoo Finance.")
 
 with st.expander("Dati trimestrali (grezzi)"):
     quarterly = finmod.get_financial_history(symbol, freq="quarterly")
     q_margins = finmod.compute_margins(quarterly)
-    q_table = finmod.to_display_table(quarterly, q_margins)
+    q_ratios = finmod.compute_ratios(quarterly)
+    q_table = finmod.to_display_table(quarterly, q_margins, q_ratios, currency)
     if not q_table.empty:
         st.dataframe(q_table, use_container_width=True)
     else:
@@ -118,38 +160,29 @@ with st.expander("Dati trimestrali (grezzi)"):
 
 st.divider()
 
-# --- Qualità e valutazione ---------------------------------------------------
-val_sec = sections["valuation"]
-st.markdown(
-    f"### {val_sec['icon']} {val_sec['title']} "
-    f"{badge(fnd.FUND_VERDICT_LABELS[val_sec['verdict']], fnd.FUND_VERDICT_BADGE_KIND[val_sec['verdict']])}",
-    unsafe_allow_html=True,
-)
-st.write(val_sec["text"])
-
+# --- 2. Rendimento sul capitale e creazione di valore -----------------------
+render_section(sections["capital_returns"])
 st.divider()
 
-# --- Contesto settoriale -----------------------------------------------------
+# --- 3. Solidità finanziaria e qualità degli utili --------------------------
+render_section(sections["financial_health"])
+st.divider()
+
+# --- 4. Valutazione ----------------------------------------------------------
+render_section(sections["valuation"])
+st.divider()
+
+# --- 5. Contesto settoriale e competitivo ------------------------------------
 sec_sec = sections["sector"]
-st.markdown(
-    f"### {sec_sec['icon']} {sec_sec['title']} "
-    f"{badge(fnd.FUND_VERDICT_LABELS[sec_sec['verdict']], fnd.FUND_VERDICT_BADGE_KIND[sec_sec['verdict']])}",
-    unsafe_allow_html=True,
-)
-st.write(sec_sec["text"])
+render_section(sec_sec)
 if sec_sec.get("peer_table") is not None and not sec_sec["peer_table"].empty:
     st.dataframe(sec_sec["peer_table"], use_container_width=True, hide_index=True)
 
 st.divider()
 
-# --- Notizie e prospettive future --------------------------------------------
+# --- 6. Notizie e prospettive future ------------------------------------------
 news_sec = sections["news"]
-st.markdown(
-    f"### {news_sec['icon']} {news_sec['title']} "
-    f"{badge(fnd.FUND_VERDICT_LABELS[news_sec['verdict']], fnd.FUND_VERDICT_BADGE_KIND[news_sec['verdict']])}",
-    unsafe_allow_html=True,
-)
-st.write(news_sec["text"])
+render_section(news_sec)
 for item in news_sec.get("news_items", []):
     s = item.get("sentiment", 0)
     kind = "ok" if s > 0 else ("bad" if s < 0 else "info")
@@ -166,9 +199,13 @@ st.info(narrative["synthesis"])
 disclaimer(
     "L'analisi fondamentale qui presentata usa dati pubblici (Yahoo Finance) e regole esplicite di "
     "interpretazione — non un modello proprietario né dati di ricerca a pagamento. La valutazione è "
-    "relativa (multipli confrontati con la storia del titolo e con eventuali concorrenti indicati), "
-    "non un fair value stimato con un DCF: le assunzioni di crescita di lungo periodo richiederebbero "
-    "dati che non sono disponibili gratuitamente. Il sentiment sulle news è una classificazione "
-    "automatica per parole chiave, da verificare leggendo gli articoli. Non è consulenza finanziaria "
-    "personalizzata."
+    "relativa (multipli confrontati con la storia del titolo stesso, tramite un P/E storico ricostruito "
+    "dai prezzi e dagli utili passati, e con eventuali concorrenti indicati), non un fair value stimato "
+    "con un DCF: le assunzioni di crescita di lungo periodo richiederebbero dati che non sono disponibili "
+    "gratuitamente. Il ROIC/WACC e i ratio di leva/liquidità dipendono dalla disponibilità e dalla "
+    "qualità delle etichette dei prospetti contabili su Yahoo Finance, che non è garantita per tutti i "
+    "titoli (specialmente non statunitensi o a piccola capitalizzazione). Il sentiment sulle news è una "
+    "classificazione automatica per parole chiave, da verificare leggendo gli articoli. Il punteggio "
+    "composito è un indicatore sintetico basato su regole dichiarate, non un rating professionale. Non è "
+    "consulenza finanziaria personalizzata."
 )

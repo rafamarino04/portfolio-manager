@@ -218,34 +218,58 @@ sono i prospetti futuri — non il movimento del prezzo. È volutamente
 limitata ai singoli titoli: le ETF non hanno un bilancio proprio, quindi
 richiederebbero un'altra logica (prevista come sviluppo successivo).
 
-Quattro sezioni, ciascuna con un paragrafo e un verdetto, come in Analisi
-Tecnica:
+L'analisi è organizzata su **sei assi**, ciascuno con un paragrafo e un
+verdetto (i primi quattro contribuiscono anche a un punteggio composito,
+visibile in alto nella pagina):
 
-- **Numeri di bilancio**: storico di ricavi, utile netto, margini, free
-  cash flow, debito e patrimonio netto (ultimi anni, più i trimestri più
-  recenti in un pannello a parte) — per vedere se l'azienda sta
-  migliorando o peggiorando nel tempo, non solo la foto di oggi. Tabella
-  e grafico ricavi/utile netto per periodo.
-- **Qualità e valutazione**: ROE, margini, leva finanziaria, crescita,
-  PEG e costo del capitale (CAPM su tasso privo di rischio live). La
-  valutazione resta relativa — multipli confrontati con la storia del
-  titolo stesso e con eventuali concorrenti — non un fair value stimato
-  con un DCF: le assunzioni di crescita di lungo periodo richiederebbero
-  dati di ricerca a pagamento che l'app non usa.
-- **Contesto settoriale**: un ETF di settore (SPDR, lo standard di
-  mercato) come proxy per il trend del settore nel suo complesso, la
-  forza relativa del titolo rispetto al settore su più orizzonti, e — se
-  indichi dei concorrenti nella pagina — un confronto diretto fianco a
-  fianco su multipli, margini e crescita.
+- **Crescita e profittabilità**: ricavi, EBITDA (e margine EBITDA%),
+  utile netto — non solo l'ultimo dato ma la classificazione del ritmo di
+  crescita sull'intero storico disponibile (in accelerazione/decelerazione/
+  stabile) e l'espansione o contrazione dei margini nel tempo. Tabella
+  completa (con numeri finalmente leggibili: valuta, scala K/Mln/Mld,
+  punti percentuali) e grafico ricavi/EBITDA/utile netto per periodo.
+- **Rendimento sul capitale e creazione di valore**: ROIC (rendimento sul
+  capitale investito, comprende anche il debito) confrontato con il WACC
+  (costo medio ponderato del capitale, esteso dal CAPM esistente con un
+  costo del debito stimato) — il test standard in finanza aziendale per
+  capire se un'azienda crea o distrugge valore, non solo "ha un ROE alto".
+- **Solidità finanziaria e qualità degli utili**: leva vista con la
+  metrica giusta (debito netto/EBITDA, non solo debito/equity), copertura
+  degli interessi, current ratio, e un confronto pluriennale tra utile
+  netto e free cash flow che segnala (non certifica) un possibile problema
+  di qualità degli utili se il primo supera sistematicamente il secondo.
+- **Valutazione**: multipli attuali (P/E, Fwd P/E, P/B, PEG) e — la novità
+  più importante — un P/E storico ricostruito dai prezzi e dagli utili
+  trailing degli ultimi 3 anni, per dire se il titolo tratta caro o a buon
+  mercato *rispetto alla propria storia*, non solo in valore assoluto.
+- **Contesto settoriale e competitivo**: un ETF di settore (SPDR, lo
+  standard di mercato) come proxy per il trend del settore nel suo
+  complesso, la forza relativa del titolo rispetto al settore su più
+  orizzonti, e — se indichi dei concorrenti nella pagina — un confronto
+  diretto fianco a fianco su multipli, margini e crescita.
 - **Notizie e prospettive future**: le news più recenti classificate per
-  tono (positivo/negativo/neutro) con un semplice filtro per parole
-  chiave in inglese, più il contesto macro generale (tassi, clima di
-  mercato) già calcolato altrove nell'app.
+  tono (positivo/negativo/neutro) con un semplice filtro per parole chiave
+  in inglese, più il contesto macro generale (tassi, clima di mercato) già
+  calcolato altrove nell'app.
 
-In fondo, una **Sintesi** che ragiona su quanto le quattro sezioni
-raccontano la stessa storia o si contraddicono (es. bilancio in
-miglioramento ma valutazione già elevata), sullo stesso principio della
-sintesi tecnica.
+In fondo, una **Sintesi** che riporta il punteggio composito e ragiona su
+quanto i quattro assi principali raccontano la stessa storia o si
+contraddicono (es. crescita solida ma valutazione già elevata, oppure
+ROIC sotto il WACC nonostante una buona solidità finanziaria).
+
+**Punteggio composito**: ogni asse produce un sotto-punteggio da -1 a +1
+con una motivazione esplicita (mai una scatola nera); i quattro assi
+principali vengono combinati con pesi dichiarati (crescita 25%, rendimento
+sul capitale 30%, solidità finanziaria 20%, valutazione 25%), che si
+ridistribuiscono automaticamente se un asse non è calcolabile per dati
+mancanti. È pensato come base per il futuro motore di punteggio
+multi-fattoriale che unirà anche l'analisi tecnica e quella macro.
+
+**Export Excel**: il bottone "Scarica Excel" in alto genera un workbook
+con sintesi, bilancio annuale (con margini calcolati da formule Excel
+leggibili e ricontrollabili, non numeri congelati), ratio/punteggio e
+confronto concorrenti — utile per archiviare le proprie analisi o
+incollarle in un modello più ampio.
 
 ## Sviluppo/test in locale (opzionale)
 
@@ -290,8 +314,18 @@ streamlit run app.py
   copertura Yahoo Finance: spesso incompleti o assenti per titoli non
   statunitensi o a bassa capitalizzazione. Le etichette delle voci di
   bilancio non sono rigidamente standardizzate: alcune metriche (es.
-  "Utile lordo" per le società finanziarie) possono risultare "n/d"
-  anche quando l'azienda esiste ed è quotata.
+  "Utile lordo" per le società finanziarie, o EBITDA/interessi
+  passivi/attivo corrente per titoli a copertura limitata) possono
+  risultare "n/d" anche quando l'azienda esiste ed è quotata — in quel
+  caso ROIC, WACC, copertura interessi o current ratio non vengono
+  mostrati invece di essere stimati su dati incompleti.
+- Il P/E storico (percentile di valutazione) richiede almeno 3 anni di
+  prezzi settimanali e diversi trimestri di EPS: se il titolo è quotato
+  da poco o ha una copertura Yahoo Finance scarsa, questa parte della
+  sezione Valutazione non viene mostrata. Il WACC usa un costo del debito
+  stimato da interessi passivi/debito totale quando disponibile, altrimenti
+  un proxy generico (tasso privo di rischio + spread di credito standard),
+  dichiarato in pagina.
 - Il contesto settoriale usa ETF di settore SPDR, che coprono il mercato
   USA: per titoli non statunitensi è un proxy imperfetto del settore
   reale del titolo, utile come indicazione generale più che come
