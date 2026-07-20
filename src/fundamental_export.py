@@ -267,6 +267,29 @@ def _write_summary_sheet(ws, symbol: str, info: dict, price, sections: dict, bre
             cell.number_format = "$#,##0,,\"M\""
         row += 1
 
+    anchors = (sections.get("valuation") or {}).get("price_anchors") or {}
+    if any(v is not None for v in anchors.values()):
+        row += 1
+        ws.cell(row=row, column=1, value="Ancora di prezzo (cross-check, non un fair value da DCF)").font = _title_font(11)
+        row += 1
+        anchor_rows = [
+            ("Implicito da reversione multiplo (P/E storico x EPS atteso)", anchors.get("pe_reversion")),
+            ("Implicito da formula di Graham (euristica classica)", anchors.get("graham")),
+        ]
+        for label, val in anchor_rows:
+            ws.cell(row=row, column=1, value=label).font = _label_font()
+            cell = ws.cell(row=row, column=2, value=val)
+            cell.font = _input_font()
+            cell.number_format = "$#,##0.00;($#,##0.00);-"
+            row += 1
+        ws.cell(row=row, column=1, value="Rendimento implicito medio (%)").font = _label_font(bold=True)
+        cell = ws.cell(row=row, column=2, value=anchors.get("expected_return_pct"))
+        cell.font = Font(name=FONT_NAME, bold=True, color=NAVY)
+        cell.number_format = "+0.0%;-0.0%"
+        if anchors.get("expected_return_pct") is not None:
+            cell.value = anchors["expected_return_pct"] / 100
+        row += 1
+
     row += 1
     total = breakdown.get("total")
     ws.cell(row=row, column=1, value="Punteggio composito").font = _label_font(bold=True)

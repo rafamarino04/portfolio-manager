@@ -169,7 +169,25 @@ render_section(sections["financial_health"])
 st.divider()
 
 # --- 4. Valutazione ----------------------------------------------------------
-render_section(sections["valuation"])
+val_sec = sections["valuation"]
+render_section(val_sec)
+
+anchors = val_sec.get("price_anchors") or {}
+if any(v is not None for v in anchors.values()):
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    ac1.metric("Prezzo attuale", finmod.format_money(price, currency) if price else "n/d")
+    ac2.metric("Implicito (reversione multiplo)",
+               finmod.format_money(anchors.get("pe_reversion"), currency) if anchors.get("pe_reversion") else "n/d")
+    ac3.metric("Implicito (formula di Graham)",
+               finmod.format_money(anchors.get("graham"), currency) if anchors.get("graham") else "n/d")
+    ac4.metric("Rendimento implicito medio",
+               finmod.format_pct(anchors.get("expected_return_pct"), signed=True) if anchors.get("expected_return_pct") is not None else "n/d")
+    st.caption(
+        "Le due ancore sono cross-check indipendenti (reversione del multiplo storico e formula di "
+        "Graham), non un fair value stimato con un DCF: vanno lette come ordini di grandezza per capire "
+        "quanto ottimismo è già nel prezzo, non come un target preciso."
+    )
+
 st.divider()
 
 # --- 5. Contesto settoriale e competitivo ------------------------------------

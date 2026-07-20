@@ -75,6 +75,14 @@ def get_info(symbol: str) -> dict:
         "num_analyst_opinions": None,
         "dividend_yield": None,
         "beta": None,
+        "price_to_book": None,
+        "return_on_equity": None,
+        "debt_to_equity": None,
+        "profit_margins": None,
+        "revenue_growth": None,
+        "free_cashflow": None,
+        "trailing_eps": None,
+        "forward_eps": None,
     }
     try:
         t = get_ticker(symbol)
@@ -92,6 +100,14 @@ def get_info(symbol: str) -> dict:
         out["num_analyst_opinions"] = info.get("numberOfAnalystOpinions")
         out["dividend_yield"] = info.get("dividendYield")
         out["beta"] = info.get("beta")
+        out["price_to_book"] = info.get("priceToBook")
+        out["return_on_equity"] = info.get("returnOnEquity")
+        out["debt_to_equity"] = info.get("debtToEquity")
+        out["profit_margins"] = info.get("profitMargins")
+        out["revenue_growth"] = info.get("revenueGrowth")
+        out["free_cashflow"] = info.get("freeCashflow")
+        out["trailing_eps"] = info.get("trailingEps")
+        out["forward_eps"] = info.get("forwardEps")
     except Exception:
         pass
     return out

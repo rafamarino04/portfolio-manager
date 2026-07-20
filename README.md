@@ -238,10 +238,16 @@ visibile in alto nella pagina):
   degli interessi, current ratio, e un confronto pluriennale tra utile
   netto e free cash flow che segnala (non certifica) un possibile problema
   di qualità degli utili se il primo supera sistematicamente il secondo.
-- **Valutazione**: multipli attuali (P/E, Fwd P/E, P/B, PEG) e — la novità
-  più importante — un P/E storico ricostruito dai prezzi e dagli utili
-  trailing degli ultimi 3 anni, per dire se il titolo tratta caro o a buon
-  mercato *rispetto alla propria storia*, non solo in valore assoluto.
+- **Valutazione**: multipli attuali (P/E, Fwd P/E, P/B, PEG), un P/E
+  storico ricostruito dai prezzi e dagli utili trailing degli ultimi 3
+  anni (per dire se il titolo tratta caro o a buon mercato *rispetto alla
+  propria storia*), più due **ancore di prezzo** che traducono il
+  giudizio in un numero: il prezzo implicito se il multiplo tornasse alla
+  propria mediana storica applicato all'EPS atteso, e il valore implicito
+  dalla formula di Graham (euristica classica, non un DCF). La media dei
+  due dà un rendimento implicito — non una previsione, ma un modo
+  esplicito per capire quanto ottimismo è già scontato nel prezzo attuale,
+  la domanda che serve davvero per decidere se un titolo conviene.
 - **Contesto settoriale e competitivo**: un ETF di settore (SPDR, lo
   standard di mercato) come proxy per il trend del settore nel suo
   complesso, la forza relativa del titolo rispetto al settore su più
@@ -330,6 +336,17 @@ streamlit run app.py
   USA: per titoli non statunitensi è un proxy imperfetto del settore
   reale del titolo, utile come indicazione generale più che come
   benchmark esatto.
+- Le due ancore di prezzo (reversione del multiplo, formula di Graham)
+  sono euristiche di controllo rapido, non un fair value rigoroso: la
+  formula di Graham in particolare è molto sensibile alla crescita attesa
+  usata come input (qui stimata dal CAGR storico dell'EPS, con un tetto al
+  15% per evitare risultati assurdi su titoli ad altissima crescita) e usa
+  il rendimento del Treasury 10 anni al posto di un rendimento
+  obbligazionario corporate AAA, non disponibile gratuitamente. Nessuna
+  delle due regole di scoring in questa sezione è stata verificata con un
+  backtest storico: sono regole costruite per ragionevolezza economica, da
+  trattare come diagnostica strutturata, non come segnale operativo
+  validato.
 - Il sentiment sulle news è un filtro per parole chiave in inglese, non
   un modello linguistico: può classificare male titoli ambigui o ironici
   ed è pensato come primo orientamento, da verificare leggendo gli

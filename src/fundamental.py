@@ -21,7 +21,12 @@ investire, non solo per riportare un numero:
   4. Valutazione                   -> il prezzo attuale è caro o a buon
                                        mercato *rispetto alla storia del
                                        titolo stesso*, non solo rispetto
-                                       a un numero assoluto?
+                                       a un numero assoluto? E — la parte
+                                       che serve davvero per decidere —
+                                       che prezzo/rendimento è implicito
+                                       se il multiplo tornasse alla sua
+                                       norma storica (due ancore: P/E
+                                       storico e formula di Graham)?
   5. Contesto settoriale           -> come si comporta rispetto al
      e competitivo                   proprio settore (ETF proxy) e ai
                                        concorrenti indicati?
@@ -354,9 +359,11 @@ def _section_financial_health(symbol: str, annual: dict) -> dict:
 # Sezione 4 — Valutazione
 # ---------------------------------------------------------------------------
 
-def _section_valuation(symbol: str, price: float | None) -> dict:
+def _section_valuation(symbol: str, price: float | None, annual: dict | None = None) -> dict:
     snap = fundamental_snapshot(symbol, price)
     band = finmod.historical_multiple_band(symbol)
+    info = dp.get_info(symbol)
+    macro_snap = mc.get_macro_snapshot()
     lines, score_parts = [], []
 
     pe = snap.get("pe_ratio")
@@ -402,6 +409,65 @@ def _section_valuation(symbol: str, price: float | None) -> dict:
     if div_yield:
         lines.append(f"Dividend yield: {finmod.format_pct(div_yield*100)}.")
 
+    # --- Ancora di prezzo: due cross-check indipendenti che traducono il
+    # giudizio qualitativo di sopra in un prezzo/rendimento atteso, per
+    # rispondere alla domanda che conta per decidere: a questo prezzo,
+    # quale scenario sto scontando? -----------------------------------
+    anchors = {"pe_reversion": None, "graham": None, "expected_return_pct": None}
+    eps_hist = (annual or {}).get("eps")
+    forward_eps = info.get("forward_eps") or info.get("trailing_eps")
+    trailing_eps = info.get("trailing_eps")
+
+    implied_pe_price = None
+    if band is not None and forward_eps:
+        implied_pe_price = finmod.implied_price_multiple_reversion(band["median"], forward_eps)
+        anchors["pe_reversion"] = implied_pe_price
+
+    eps_cagr = finmod.growth_rate(eps_hist) if eps_hist is not None else None
+    growth_estimate = eps_cagr if eps_cagr is not None else ((snap.get("revenue_growth") or 0) * 100 if snap.get("revenue_growth") else None)
+    risk_free = macro_snap.get("ten_year_yield")
+    graham_value = None
+    if trailing_eps and growth_estimate is not None and risk_free:
+        graham_value = finmod.graham_intrinsic_value(trailing_eps, growth_estimate, risk_free)
+        anchors["graham"] = graham_value
+
+    implied_prices = [v for v in (implied_pe_price, graham_value) if v is not None]
+    if implied_prices and price:
+        avg_implied = sum(implied_prices) / len(implied_prices)
+        expected_return = (avg_implied / price - 1) * 100
+        anchors["expected_return_pct"] = expected_return
+
+        if implied_pe_price is not None:
+            ret_pe = (implied_pe_price / price - 1) * 100
+            lines.append(
+                f"Ancora #1 — reversione del multiplo: se il P/E tornasse alla propria mediana storica "
+                f"({finmod.format_ratio(band['median'], suffix='')}) applicato all'EPS atteso "
+                f"({finmod.format_number(forward_eps, decimals=2)}), il prezzo implicito è "
+                f"{finmod.format_money(implied_pe_price, info.get('currency'))}, un {finmod.format_pct(ret_pe, signed=True)} "
+                f"{'sopra' if ret_pe >= 0 else 'sotto'} il prezzo attuale."
+            )
+        if graham_value is not None:
+            ret_graham = (graham_value / price - 1) * 100
+            lines.append(
+                f"Ancora #2 — formula di Graham (euristica classica, non un DCF): con una crescita attesa "
+                f"assunta al {finmod.format_pct(growth_estimate)} e un tasso privo di rischio del "
+                f"{finmod.format_pct(risk_free)}, il valore implicito è "
+                f"{finmod.format_money(graham_value, info.get('currency'))}, un {finmod.format_pct(ret_graham, signed=True)} "
+                f"{'sopra' if ret_graham >= 0 else 'sotto'} il prezzo attuale. È molto sensibile all'assunzione "
+                "di crescita: va letta come un ordine di grandezza, non un target preciso."
+            )
+        lines.append(
+            f"Media delle due ancore: rendimento implicito di circa {finmod.format_pct(expected_return, signed=True)} "
+            "se il prezzo convergesse verso questi riferimenti — non una previsione, un modo per rendere "
+            "esplicito quanto ottimismo (o pessimismo) è già scontato nel prezzo attuale."
+        )
+        score_parts.append(0.6 if expected_return > 15 else (-0.6 if expected_return < -15 else 0.0))
+    elif not implied_prices:
+        lines.append(
+            "Non è stato possibile calcolare un'ancora di prezzo (P/E storico o stima di crescita/EPS "
+            "insufficienti per questo titolo): la valutazione resta solo qualitativa in questo caso."
+        )
+
     score = sum(score_parts) / len(score_parts) if score_parts else None
     verdict = "positivo" if score is not None and score > 0.15 else ("negativo" if score is not None and score < -0.15 else "neutro")
     if not lines:
@@ -409,7 +475,7 @@ def _section_valuation(symbol: str, price: float | None) -> dict:
 
     return {"key": "valuation", "icon": "\U0001F4B0", "title": "Valutazione",
             "verdict": verdict, "text": " ".join(lines), "score": score,
-            "snapshot": snap, "historical_band": band}
+            "snapshot": snap, "historical_band": band, "price_anchors": anchors}
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +663,7 @@ def build_fundamental_narrative(symbol: str, peers: list[str] | None = None) -> 
         growth_sec,
         _section_capital_returns(symbol, annual),
         _section_financial_health(symbol, annual),
-        _section_valuation(symbol, price),
+        _section_valuation(symbol, price, annual),
         _section_sector(symbol, info.get("sector"), peers),
         _section_news(symbol),
     ]
