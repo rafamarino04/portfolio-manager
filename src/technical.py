@@ -1,20 +1,24 @@
 """
-Analisi tecnica: trend, supporti/resistenze e trendlines, medie mobili e
-bande di Bollinger, oscillatori (RSI, Stocastico, MACD, Williams %R),
-pattern di candlestick giapponesi e figure di prezzo con relativi obiettivi
-di misurazione.
+Analisi tecnica — ricostruita secondo Specifica_Analisi_Tecnica_Murphy.md
+e il modulo di riferimento ta_core.py forniti dall'utente. Segue
+l'impianto di J. J. Murphy (*Analisi tecnica dei mercati finanziari*) su
+tre premesse: il prezzo sconta tutto, i prezzi si muovono in trend, la
+storia si ripete. Ogni output è uno schema statistico descrittivo sui
+dati passati, mai una previsione.
 
-Metodologia e parametri standard (RSI a 14 periodi con soglie 70/30,
-Stocastico 14/3/3 con soglie 80/20, MACD 12/26/9, Bollinger 20 periodi a 2
-deviazioni standard, tecniche di misurazione delle figure grafiche come
-altezza-proiettata-dalla-rottura) derivano da John J. Murphy, "Analisi
-tecnica dei mercati finanziari" — qui reimplementati come regole di calcolo,
-non riportati come testo del manuale.
-
-Tre orizzonti temporali (breve/medio/lungo) usano periodo dati e parametri
-diversi, secondo l'indicazione del manuale di accorciare gli oscillatori per
-il trading di breve periodo e allungarli/applicarli su base settimanale per
-l'investimento di lungo periodo.
+Principi architetturali (§0 della specifica), tutti implementati qui:
+  1. Ogni finestra di calcolo scala con l'orizzonte scelto (breve/medio/
+     lungo) — niente più trend detector a finestra fissa che produce
+     verdetti sbagliati su orizzonti diversi da quello per cui è tarato.
+  2. Gerarchia dei timeframe: il trend strutturale (Dow, swing HH/HL vs
+     LH/LL) e l'allineamento delle medie mobili si riconciliano con una
+     regola deterministica (§2) — una debolezza di breve dentro un
+     allineamento rialzista delle medie è un *pullback*, non un'inversione.
+  3. Concordanza prima del verdetto: il motore di sintesi (§11) produce
+     due numeri distinti — Directional Score e Agreement Index — e
+     distingue esplicitamente "neutro per assenza di direzione" da
+     "conflitto tra segnali" (oggi confusi in un unico "neutro ~0").
+  4. Descrittivo, non predittivo: i disclaimer restano ovunque.
 """
 from __future__ import annotations
 
@@ -23,36 +27,47 @@ import pandas as pd
 
 from src import data_provider as dp
 
+# ---------------------------------------------------------------------------
+# §0 — Tabella maestra: parametri per orizzonte (fedele a ta_core.py)
+# ---------------------------------------------------------------------------
 HORIZONS = {
     "breve": {
         "label": "Breve termine (trading)",
-        "period": "3mo", "interval": "1d",
-        "rsi_period": 9, "stoch_k": 14, "stoch_d": 3, "stoch_smooth": 3,
-        "ma_fast": 4, "ma_mid": 9, "ma_slow": 18,
-        "swing_order": 2,
+        "period": "6mo", "interval": "1d",
+        "swing_order": 3,            # fractal stretti (2-3 bar)
+        "trend_lookback": 60,
+        "ma": (10, 20, 50),
+        "rsi_period": 14, "stoch": (14, 3, 3), "has_stochastic": True,
+        "sr_lookback_bars": 63,       # ultimi ~3 mesi di borsa
     },
     "medio": {
         "label": "Medio termine (posizionamento)",
-        "period": "1y", "interval": "1d",
-        "rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "stoch_smooth": 3,
-        "ma_fast": 20, "ma_mid": 50, "ma_slow": 200,
-        "swing_order": 4,
+        "period": "2y", "interval": "1d",
+        "swing_order": 5,            # fractal medi
+        "trend_lookback": 160,
+        "ma": (20, 50, 200),
+        "rsi_period": 14, "stoch": (14, 3, 3), "has_stochastic": True,
+        "sr_lookback_bars": 210,      # ultimi ~9-12 mesi
     },
     "lungo": {
         "label": "Lungo termine (investimento)",
-        "period": "5y", "interval": "1wk",
-        "rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "stoch_smooth": 3,
-        "ma_fast": 20, "ma_mid": 50, "ma_slow": 200,
-        "swing_order": 4,
+        "period": "10y", "interval": "1wk",
+        "swing_order": 9,            # fractal ampi (8-10 bar, su settimanale)
+        "trend_lookback": 150,        # ~2-3 anni di settimane
+        "ma": (30, 50, 200),
+        "rsi_period": 14, "stoch": (14, 3, 3), "has_stochastic": False,
+        "sr_lookback_bars": None,      # multi-anno: usa tutta la storia disponibile
     },
 }
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers generici
 # ---------------------------------------------------------------------------
 
-def _last(series: pd.Series):
+def _last(series: pd.Series | None):
+    if series is None:
+        return None
     s = series.dropna()
     return float(s.iloc[-1]) if not s.empty else None
 
@@ -75,8 +90,99 @@ def _recent_cross(fast: pd.Series, slow: pd.Series, lookback: int = 5):
     return None
 
 
+def _slope_sign(series: pd.Series, min_points: int = 5) -> int:
+    """Segno della pendenza di una regressione lineare sulla serie
+    (usato per le divergenze prezzo/oscillatore e prezzo/OBV)."""
+    s = series.dropna()
+    if len(s) < min_points:
+        return 0
+    x = np.arange(len(s))
+    slope, _ = np.polyfit(x, s.values.astype(float), 1)
+    if abs(slope) < 1e-9:
+        return 0
+    return 1 if slope > 0 else -1
+
+
 # ---------------------------------------------------------------------------
-# Medie mobili e bande di Bollinger (cap. 9)
+# §1 — Swing detection e trend strutturale (Dow Theory), da ta_core.py
+# ---------------------------------------------------------------------------
+
+def detect_swings(hist: pd.DataFrame, order: int) -> list[dict]:
+    """Rileva swing high/low come massimi/minimi locali su finestra +/-
+    `order` (fractal). `order` scala con l'orizzonte (vedi HORIZONS).
+    Ritorna una lista cronologica alternata H/L: [{'date','price','kind'}]."""
+    highs = hist["High"].to_numpy()
+    lows = hist["Low"].to_numpy()
+    idx = hist.index
+    n = len(hist)
+    raw: list[dict] = []
+
+    for i in range(order, n - order):
+        win_h = highs[i - order:i + order + 1]
+        win_l = lows[i - order:i + order + 1]
+        if highs[i] == win_h.max() and win_h.argmax() == order:
+            raw.append({"date": idx[i], "price": float(highs[i]), "kind": "H"})
+        elif lows[i] == win_l.min() and win_l.argmin() == order:
+            raw.append({"date": idx[i], "price": float(lows[i]), "kind": "L"})
+
+    # Alterna H/L: se due swing consecutivi sono dello stesso tipo, tieni il più estremo
+    cleaned: list[dict] = []
+    for s in raw:
+        if cleaned and cleaned[-1]["kind"] == s["kind"]:
+            if s["kind"] == "H" and s["price"] > cleaned[-1]["price"]:
+                cleaned[-1] = s
+            elif s["kind"] == "L" and s["price"] < cleaned[-1]["price"]:
+                cleaned[-1] = s
+        else:
+            cleaned.append(s)
+    return cleaned
+
+
+def swings_by_kind(swings: list[dict]) -> tuple[list[tuple], list[tuple]]:
+    """Converte la lista cronologica alternata in due liste separate
+    (date, price) — formato retro-compatibile per trendline/S-R/pattern."""
+    highs = [(s["date"], s["price"]) for s in swings if s["kind"] == "H"]
+    lows = [(s["date"], s["price"]) for s in swings if s["kind"] == "L"]
+    return highs, lows
+
+
+def classify_structural_trend(swings: list[dict]) -> str:
+    """Trend per struttura di swing (§1), non per una singola media:
+    HH+HL = rialzista, LH+LL = ribassista, altrimenti laterale. Guarda gli
+    ultimi 2 massimi e ultimi 2 minimi rilevanti (gli ultimi ~3-4 swing)."""
+    highs = [s for s in swings if s["kind"] == "H"]
+    lows = [s for s in swings if s["kind"] == "L"]
+    if len(highs) < 2 or len(lows) < 2:
+        return "laterale"
+
+    hh = highs[-1]["price"] > highs[-2]["price"]
+    hl = lows[-1]["price"] > lows[-2]["price"]
+    lh = highs[-1]["price"] < highs[-2]["price"]
+    ll = lows[-1]["price"] < lows[-2]["price"]
+
+    if hh and hl:
+        return "rialzista"
+    if lh and ll:
+        return "ribassista"
+    return "laterale"
+
+
+def recent_swing_strength(swings: list[dict]) -> str:
+    """Forza/debolezza di brevissimo termine tra gli ultimi due swing:
+    serve alla riconciliazione per distinguere un pullback da un'inversione
+    vera. Ritorna 'up' | 'down' | 'flat'."""
+    if len(swings) < 2:
+        return "flat"
+    last, prev = swings[-1], swings[-2]
+    if last["price"] > prev["price"]:
+        return "up"
+    if last["price"] < prev["price"]:
+        return "down"
+    return "flat"
+
+
+# ---------------------------------------------------------------------------
+# §4 — Medie mobili e allineamento
 # ---------------------------------------------------------------------------
 
 def sma(series: pd.Series, window: int) -> pd.Series:
@@ -87,27 +193,37 @@ def ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
 
 
-def compute_moving_averages(hist: pd.DataFrame, params: dict) -> dict:
-    close = hist["Close"]
-    fast = sma(close, params["ma_fast"])
-    mid = sma(close, params["ma_mid"])
-    slow = sma(close, params["ma_slow"])
-    fast_val, mid_val, slow_val = _last(fast), _last(mid), _last(slow)
+def ma_alignment_from_values(price, fast_val, mid_val, slow_val) -> str:
+    if None in (price, fast_val, mid_val, slow_val) or any(pd.isna(v) for v in (price, fast_val, mid_val, slow_val)):
+        return "misto"
+    if price > fast_val > mid_val > slow_val:
+        return "rialzista"
+    if price < fast_val < mid_val < slow_val:
+        return "ribassista"
+    return "misto"
 
-    alignment = None
-    if fast_val is not None and mid_val is not None and slow_val is not None:
-        if fast_val > mid_val > slow_val:
-            alignment = "rialzista"
-        elif fast_val < mid_val < slow_val:
-            alignment = "ribassista"
-        else:
-            alignment = "misto"
+
+def compute_moving_averages(hist: pd.DataFrame, ma_tuple: tuple[int, int, int]) -> dict:
+    close = hist["Close"]
+    fast_n, mid_n, slow_n = ma_tuple
+    fast = sma(close, fast_n)
+    mid = sma(close, mid_n)
+    slow = sma(close, slow_n)
+    fast_val, mid_val, slow_val = _last(fast), _last(mid), _last(slow)
+    price = _last(close)
+
+    alignment = ma_alignment_from_values(price, fast_val, mid_val, slow_val)
+    # Pendenza della media media: piatta = mercato laterale (§4), da non
+    # interpretare come trend nemmeno se il prezzo la attraversa spesso.
+    mid_slope = _slope_sign(mid.tail(10))
+    is_flat = mid_slope == 0
 
     cross = _recent_cross(mid, slow)
     return {
         "fast": fast, "mid": mid, "slow": slow,
+        "fast_n": fast_n, "mid_n": mid_n, "slow_n": slow_n,
         "fast_val": fast_val, "mid_val": mid_val, "slow_val": slow_val,
-        "alignment": alignment,
+        "alignment": alignment, "is_flat": is_flat,
         "golden_cross": cross == "rialzista",
         "death_cross": cross == "ribassista",
     }
@@ -139,7 +255,60 @@ def bollinger_bands(hist: pd.DataFrame, window: int = 20, num_std: float = 2.0) 
 
 
 # ---------------------------------------------------------------------------
-# Oscillatori (cap. 10)
+# §2 — RICONCILIAZIONE trend <-> medie (fix del bug principale)
+# ---------------------------------------------------------------------------
+
+def reconcile_trend(struct: str, ma_align: str, strength: str) -> dict:
+    """Regola deterministica (§2): concilia struttura swing e allineamento
+    medie PRIMA di emettere il verdetto. Risolve sia il verdetto errato
+    ("Trend Ribassista" con prezzo ai massimi) sia la contraddizione
+    interna ("Ribassista" + "Medie rialziste" mostrati insieme).
+
+    Ritorna sia un'etichetta descrittiva (`verdict_label`, con la nuance
+    pullback/rimbalzo) sia una categoria semplice (`verdict_simple`, per
+    badge/scoring) e un voto direzionale (d, c) pronto per il motore di
+    sintesi (§11)."""
+    if struct == "rialzista" and ma_align == "rialzista":
+        return {"verdict_label": "Rialzista (alta confidenza)", "verdict_simple": "rialzista", "d": 0.9, "c": 0.9}
+    if struct == "ribassista" and ma_align == "ribassista":
+        return {"verdict_label": "Ribassista (alta confidenza)", "verdict_simple": "ribassista", "d": -0.9, "c": 0.9}
+    if ma_align == "rialzista" and strength == "down":
+        return {"verdict_label": "Rialzista con pullback in corso", "verdict_simple": "rialzista", "d": 0.35, "c": 0.6}
+    if ma_align == "ribassista" and strength == "up":
+        return {"verdict_label": "Ribassista con rimbalzo in corso", "verdict_simple": "ribassista", "d": -0.35, "c": 0.6}
+    if struct == "rialzista":
+        return {"verdict_label": "Rialzista (media confidenza)", "verdict_simple": "rialzista", "d": 0.6, "c": 0.5}
+    if struct == "ribassista":
+        return {"verdict_label": "Ribassista (media confidenza)", "verdict_simple": "ribassista", "d": -0.6, "c": 0.5}
+    return {"verdict_label": "Laterale / senza trend", "verdict_simple": "laterale", "d": 0.0, "c": 0.4}
+
+
+def analyze_trend(hist: pd.DataFrame, params: dict) -> dict:
+    """Pipeline completa di trend per un orizzonte: swing scalati, trend
+    strutturale, allineamento medie, riconciliazione. Finestra di calcolo
+    che scala con l'orizzonte scelto (§0.1) — l'errore #1 dell'implementazione
+    precedente era una finestra fissa e corta indipendente dall'orizzonte."""
+    lookback = params["trend_lookback"]
+    window = hist.iloc[-lookback:] if len(hist) > lookback else hist
+    swings = detect_swings(window, params["swing_order"])
+    struct = classify_structural_trend(swings)
+    strength = recent_swing_strength(swings)
+
+    ma = compute_moving_averages(hist, params["ma"])
+    recon = reconcile_trend(struct, ma["alignment"], strength)
+
+    swing_highs, swing_lows = swings_by_kind(swings)
+    return {
+        "struct": struct, "ma_alignment": ma["alignment"], "recent_strength": strength,
+        "verdict_label": recon["verdict_label"], "verdict_simple": recon["verdict_simple"],
+        "d": recon["d"], "c": recon["c"],
+        "n_swings": len(swings), "swings": swings,
+        "swing_highs": swing_highs, "swing_lows": swing_lows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Oscillatori (RSI, Stocastico, MACD, Williams %R) — formule standard
 # ---------------------------------------------------------------------------
 
 def rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -158,8 +327,9 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def rsi_signal(value: float | None) -> str | None:
-    """Soglie standard 70/30; 80/20 nei mercati con trend molto forte
-    (qui usate come soglie 'forte' addizionali)."""
+    """Soglie fisse e uniformi (fix §5): >70 ipercomprato, <30 ipervenduto
+    — sempre le stesse, cosi' il testo generato dai flag reali non produce
+    più non-sequitur tipo 'RSI neutrale... stocastico anch'esso ipercomprato'."""
     if value is None:
         return None
     if value >= 80:
@@ -171,6 +341,22 @@ def rsi_signal(value: float | None) -> str | None:
     if value <= 30:
         return "ipervenduto"
     return "neutrale"
+
+
+def detect_rsi_divergence(close: pd.Series, rsi_series: pd.Series, lookback: int = 30) -> str | None:
+    """Divergenza (§5, §11): il prezzo fa un nuovo estremo ma l'RSI no —
+    segnale di indebolimento del momentum. 'ribassista' = prezzo ai
+    massimi con RSI più debole del suo massimo recente; 'rialzista' =
+    simmetrico sui minimi."""
+    c = close.tail(lookback).dropna()
+    r = rsi_series.tail(lookback).dropna()
+    if len(c) < 10 or len(r) < 10:
+        return None
+    if c.iloc[-1] >= c.max() * 0.999 and r.idxmax() != r.index[-1] and r.iloc[-1] < r.max() * 0.98:
+        return "ribassista"
+    if c.iloc[-1] <= c.min() * 1.001 and r.idxmin() != r.index[-1] and r.iloc[-1] > r.min() * 1.02:
+        return "rialzista"
+    return None
 
 
 def stochastic(hist: pd.DataFrame, k_period: int = 14, d_period: int = 3, smooth: int = 3) -> dict:
@@ -208,13 +394,11 @@ def williams_r(hist: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 def atr(hist: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average True Range di Wilder: la volatilità media recente in punti
-    di prezzo, usata per calibrare stop e obiettivi in proporzione a
-    quanto il titolo si muove normalmente — non nel materiale delle
-    tecniche di misurazione delle figure di Murphy usato per il resto del
-    modulo, ma uno standard ampiamente diffuso (stesso autore dell'RSI)
-    aggiunto qui per rendere operativo il piano di trading di breve
-    termine (vedi trade_plan)."""
+    """Average True Range di Wilder: volatilità media recente in punti di
+    prezzo, usata per calibrare stop/target nel piano operativo (§13) —
+    non è nel materiale delle tecniche di misurazione delle figure di
+    Murphy usato per il resto del modulo, ma è uno standard ampiamente
+    diffuso (stesso autore dell'RSI) necessario per un piano operativo."""
     high, low, close = hist["High"], hist["Low"], hist["Close"]
     prev_close = close.shift(1)
     tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
@@ -222,40 +406,155 @@ def atr(hist: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
-# Trend, supporti/resistenze, trendlines (cap. 4)
+# §7 — Volume e On-Balance Volume
 # ---------------------------------------------------------------------------
 
-def find_swing_points(hist: pd.DataFrame, order: int = 4):
-    """Massimi/minimi locali: un punto è uno swing high/low se è
-    l'estremo tra `order` barre prima e dopo. Base per trendlines, S/R e
-    riconoscimento delle figure di prezzo."""
-    highs, lows = hist["High"], hist["Low"]
-    swing_highs, swing_lows = [], []
+def obv(hist: pd.DataFrame) -> pd.Series:
+    """On-Balance Volume: cumula il volume col segno della variazione di
+    chiusura — proxy sintetico del flusso (§7)."""
+    close = hist["Close"]
+    volume = hist["Volume"]
+    direction = np.sign(close.diff()).fillna(0)
+    return (direction * volume).cumsum()
+
+
+def volume_analysis(hist: pd.DataFrame, lookback: int) -> dict:
+    """Volume come conferma (Murphy, §7): espande nella direzione del
+    trend = conferma, contrae = cautela. Divergenza OBV/prezzo = early
+    warning. Spike di volume = maggiore affidabilità di un eventuale
+    breakout."""
+    volume = hist["Volume"]
+    close = hist["Close"]
+    obv_series = obv(hist)
+    window = min(lookback, len(hist))
+
+    vol_trend = None
+    if window >= 10:
+        half = window // 2
+        recent_vol = volume.tail(half).mean()
+        prior_vol = volume.tail(window).head(window - half).mean()
+        if prior_vol and prior_vol > 0:
+            change = (recent_vol - prior_vol) / prior_vol
+            vol_trend = "in espansione" if change > 0.1 else ("in contrazione" if change < -0.1 else "stabile")
+
+    price_slope = _slope_sign(close.tail(window))
+    obv_slope = _slope_sign(obv_series.tail(window))
+    divergence = None
+    if price_slope != 0 and obv_slope != 0 and price_slope != obv_slope:
+        divergence = "ribassista" if price_slope > 0 else "rialzista"
+
+    avg_vol = volume.tail(window).mean() if window >= 5 else None
+    last_vol = float(volume.iloc[-1]) if len(volume) else None
+    spike = bool(last_vol and avg_vol and avg_vol > 0 and last_vol > 1.5 * avg_vol)
+
+    return {
+        "obv_series": obv_series, "obv_val": _last(obv_series),
+        "volume_trend": vol_trend, "divergence": divergence, "volume_spike": spike,
+        "price_slope": price_slope, "obv_slope": obv_slope,
+    }
+
+
+# ---------------------------------------------------------------------------
+# §3 — Supporti/resistenze (fix: primo livello sotto/sopra il prezzo,
+# non il più toccato in assoluto) e trendline validate
+# ---------------------------------------------------------------------------
+
+def support_resistance_levels(hist: pd.DataFrame, swing_highs, swing_lows,
+                               ma_dict: dict, sr_lookback_bars: int | None,
+                               tolerance_pct: float = 1.5, max_levels: int = 8) -> list[dict]:
+    """Livelli pesati per numero di tocchi + recency + volume ai tocchi
+    (§3). Include le medie mobili come supporti/resistenze dinamici —
+    spesso il primo livello reale, non un vecchio massimo lontano. Il
+    ruolo (supporto/resistenza) è sempre relativo al prezzo attuale: si
+    scambia dopo la rottura, come in Murphy."""
+    current_price = _last(hist["Close"])
+    if current_price is None:
+        return []
+
+    # Limita gli swing all'orizzonte S/R richiesto (non tutto lo storico
+    # scaricato, che può coprire anni anche per l'orizzonte breve).
+    if sr_lookback_bars:
+        cutoff = hist.index[-sr_lookback_bars] if len(hist) > sr_lookback_bars else hist.index[0]
+        swing_highs = [(d, p) for d, p in swing_highs if d >= cutoff]
+        swing_lows = [(d, p) for d, p in swing_lows if d >= cutoff]
+
     n = len(hist)
-    for i in range(order, n - order):
-        wh = highs.iloc[i - order:i + order + 1]
-        wl = lows.iloc[i - order:i + order + 1]
-        if highs.iloc[i] == wh.max() and (wh == highs.iloc[i]).sum() == 1:
-            swing_highs.append((hist.index[i], float(highs.iloc[i])))
-        if lows.iloc[i] == wl.min() and (wl == lows.iloc[i]).sum() == 1:
-            swing_lows.append((hist.index[i], float(lows.iloc[i])))
-    return swing_highs, swing_lows
+    volume = hist["Volume"] if "Volume" in hist.columns else None
+
+    def _recency_score(date) -> float:
+        pos = hist.index.get_loc(date)
+        return pos / max(1, n - 1)  # 0 (vecchio) .. 1 (recente)
+
+    def _volume_score(date) -> float:
+        if volume is None:
+            return 0.5
+        avg = volume.tail(min(n, 60)).mean()
+        v = float(volume.loc[date]) if date in volume.index else None
+        if not v or not avg:
+            return 0.5
+        return min(1.0, v / (2 * avg))
+
+    all_points = [(d, p) for d, p in swing_highs] + [(d, p) for d, p in swing_lows]
+    clusters = []
+    for d, p in sorted(all_points, key=lambda x: x[1]):
+        placed = False
+        for c in clusters:
+            if abs(p - c["mean"]) / c["mean"] * 100 <= tolerance_pct:
+                c["values"].append(p)
+                c["dates"].append(d)
+                c["mean"] = sum(c["values"]) / len(c["values"])
+                placed = True
+                break
+        if not placed:
+            clusters.append({"mean": p, "values": [p], "dates": [d]})
+
+    levels = []
+    for c in clusters:
+        touches = len(c["values"])
+        recency = max((_recency_score(d) for d in c["dates"]), default=0.0)
+        vol_score = max((_volume_score(d) for d in c["dates"]), default=0.5)
+        robustness = touches * 1.0 + recency * 2.0 + vol_score * 1.0
+        role = "resistenza" if c["mean"] > current_price else "supporto"
+        levels.append({
+            "level": round(c["mean"], 4), "touches": touches, "recency": round(recency, 2),
+            "volume_score": round(vol_score, 2), "robustness": round(robustness, 2),
+            "role": role, "source": "swing",
+        })
+
+    # Medie mobili come livelli dinamici (§3): spesso il vero primo livello.
+    for key, label in (("fast", "MA breve"), ("mid", "MA media"), ("slow", "MA lunga")):
+        val = ma_dict.get(f"{key}_val")
+        if val is None or pd.isna(val):
+            continue
+        role = "resistenza" if val > current_price else "supporto"
+        levels.append({
+            "level": round(float(val), 4), "touches": 1, "recency": 1.0, "volume_score": 0.5,
+            "robustness": 2.5, "role": role, "source": label,
+        })
+
+    levels.sort(key=lambda l: l["level"])
+    if len(levels) > max_levels:
+        levels.sort(key=lambda l: -l["robustness"])
+        levels = levels[:max_levels]
+        levels.sort(key=lambda l: l["level"])
+    return levels
 
 
-def detect_trend(swing_highs, swing_lows) -> str:
-    """Massimi e minimi crescenti = rialzista; decrescenti = ribassista;
-    altrimenti laterale (concetto base del cap. 4)."""
-    if len(swing_highs) < 2 or len(swing_lows) < 2:
-        return "indeterminato"
-    hh = swing_highs[-1][1] > swing_highs[-2][1]
-    hl = swing_lows[-1][1] > swing_lows[-2][1]
-    lh = swing_highs[-1][1] < swing_highs[-2][1]
-    ll = swing_lows[-1][1] < swing_lows[-2][1]
-    if hh and hl:
-        return "rialzista"
-    if lh and ll:
-        return "ribassista"
-    return "laterale"
+def nearest_support(levels: list[dict], price: float) -> dict | None:
+    """Fix del bug 'supporto più vicino a 276 con prezzo a 325': il primo
+    supporto è sempre quello più vicino SOTTO il prezzo, per distanza —
+    non il livello con più tocchi in assoluto, che può essere lontano."""
+    candidates = [l for l in levels if l["role"] == "supporto" and l["level"] < price]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda l: l["level"])  # il più vicino sotto = il più alto tra i supporti
+
+
+def nearest_resistance(levels: list[dict], price: float) -> dict | None:
+    candidates = [l for l in levels if l["role"] == "resistenza" and l["level"] > price]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda l: l["level"])  # il più vicino sopra = il più basso tra le resistenze
 
 
 def _slope(points) -> float:
@@ -270,18 +569,47 @@ def _slope(points) -> float:
     return float(slope)
 
 
-def fit_trendline(points) -> dict | None:
-    """Regressione lineare sui punti (data, prezzo). Servono almeno 2
-    punti per tracciarla; il manuale raccomanda un terzo tocco per
-    considerarla confermata (qui esposto come `touches`)."""
-    if len(points) < 2:
+def fit_trendline(points: list[tuple], kind: str, hist: pd.DataFrame, atr_val: float | None) -> dict | None:
+    """Fit su swing omogenei (solo minimi per una linea di supporto, solo
+    massimi per una di resistenza — garantito dal chiamante). Richiede
+    >=3 punti di contatto per essere mostrata (§3). Valida che la linea
+    non attraversi la serie prezzi nel range di fit (tolleranza ATR):
+    fix del bug "resistenza a 120 con prezzo a 210"."""
+    if len(points) < 3:
         return None
-    x0 = points[0][0]
-    xs = np.array([(p[0] - x0).total_seconds() / 86400 for p in points])
-    ys = np.array([p[1] for p in points], dtype=float)
+    pts = sorted(points, key=lambda p: p[0])
+    x0 = pts[0][0]
+    xs = np.array([(p[0] - x0).total_seconds() / 86400 for p in pts])
+    ys = np.array([p[1] for p in pts], dtype=float)
+    if xs.max() == xs.min():
+        return None
     slope, intercept = np.polyfit(xs, ys, 1)
-    return {"slope": float(slope), "intercept": float(intercept), "x0": x0,
-            "touches": len(points), "confirmed": len(points) >= 3, "points": points}
+
+    tol = 0.4 * atr_val if atr_val else 0.01 * float(np.mean(ys))
+    start, end = pts[0][0], pts[-1][0]
+    window = hist.loc[(hist.index >= start) & (hist.index <= end)]
+    violations = 0
+    for d, row in window.iterrows():
+        days = (d - x0).total_seconds() / 86400
+        line_y = slope * days + intercept
+        if kind == "support" and line_y > row["Low"] + tol:
+            violations += 1
+        elif kind == "resistance" and line_y < row["High"] - tol:
+            violations += 1
+    valid = len(window) == 0 or (violations / max(1, len(window))) <= 0.1
+
+    # Scarta pendenze che portano a valori fuori scala rispetto al range prezzi del periodo
+    price_range = float(hist["Close"].max() - hist["Close"].min()) or 1.0
+    end_days = (end - x0).total_seconds() / 86400
+    edge_val = slope * end_days + intercept
+    if abs(edge_val - float(np.mean(ys))) > 5 * price_range:
+        valid = False
+
+    if not valid:
+        return None
+
+    return {"slope": float(slope), "intercept": float(intercept), "x0": x0, "kind": kind,
+            "touches": len(pts), "confirmed": len(pts) >= 3, "points": pts}
 
 
 def _trendline_y(line: dict, x) -> float:
@@ -289,41 +617,17 @@ def _trendline_y(line: dict, x) -> float:
     return line["slope"] * days + line["intercept"]
 
 
-def support_resistance_levels(hist: pd.DataFrame, swing_highs, swing_lows,
-                               tolerance_pct: float = 1.5, max_levels: int = 4) -> list[dict]:
-    """Raggruppa gli estremi locali entro `tolerance_pct` per trovare
-    livelli orizzontali toccati più volte: più tocchi, più significativo
-    il livello di supporto/resistenza."""
-    all_points = sorted([p for _, p in swing_highs] + [p for _, p in swing_lows])
-    if not all_points:
-        return []
-    clusters = []
-    for p in all_points:
-        placed = False
-        for c in clusters:
-            if abs(p - c["mean"]) / c["mean"] * 100 <= tolerance_pct:
-                c["values"].append(p)
-                c["mean"] = sum(c["values"]) / len(c["values"])
-                placed = True
-                break
-        if not placed:
-            clusters.append({"mean": p, "values": [p]})
-    clusters = [c for c in clusters if len(c["values"]) >= 2]
-    clusters.sort(key=lambda c: -len(c["values"]))
-
-    current_price = _last(hist["Close"])
-    out = []
-    for c in clusters[:max_levels]:
-        role = "resistenza" if current_price and c["mean"] > current_price else "supporto"
-        out.append({"level": round(c["mean"], 4), "touches": len(c["values"]), "role": role})
-    out.sort(key=lambda c: c["level"])
-    return out
-
-
 # ---------------------------------------------------------------------------
-# Pattern di candlestick giapponesi (cap. 12) — formazioni a 1/2/3 candele
-# tra le più codificabili in modo oggettivo da dati OHLC.
+# §9 — Pattern di candlestick con filtro affidabilità/recency/contesto
 # ---------------------------------------------------------------------------
+
+_CANDLE_RELIABILITY = {
+    "Doji": 1, "Hammer": 1, "Hanging man": 1, "Inverted hammer / Shooting star": 1,
+    "Engulfing rialzista": 2, "Engulfing ribassista": 2,
+    "Piercing line": 2, "Dark cloud cover": 2,
+    "Morning star": 3, "Evening star": 3,
+}
+
 
 def _candle(row) -> dict:
     o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
@@ -336,7 +640,9 @@ def _candle(row) -> dict:
     }
 
 
-def detect_candlestick_patterns(hist: pd.DataFrame, lookback: int = 8) -> list[dict]:
+def detect_candlestick_patterns(hist: pd.DataFrame, lookback: int = 12) -> list[dict]:
+    """Rilevamento grezzo (1/2/3 candele) — il filtro di affidabilità e
+    contesto è applicato separatamente da `filter_candlestick_patterns`."""
     patterns = []
     n = len(hist)
     start = max(2, n - lookback)
@@ -392,15 +698,65 @@ def detect_candlestick_patterns(hist: pd.DataFrame, lookback: int = 8) -> list[d
     return patterns
 
 
+def filter_candlestick_patterns(raw_patterns: list[dict], hist: pd.DataFrame, trend_struct: str,
+                                 sr_levels: list[dict], max_output: int = 3) -> dict:
+    """Fix §9: peso di affidabilità (3 candele > 2 > 1) + bonus di
+    coerenza con trend/livello + filtro di contesto (pattern opposti
+    ravvicinati si annullano, invece di essere elencati entrambi come
+    validi con pari dignità — il problema concreto di evening star e
+    piercing line consecutivi). Limita l'output alle ultime ~2-3 candele
+    davvero significative."""
+    if not raw_patterns:
+        return {"patterns": [], "had_conflict": False}
+
+    weighted = []
+    for p in raw_patterns:
+        w = _CANDLE_RELIABILITY.get(p["pattern"], 1)
+        coherence = 0
+        if p["date"] in hist.index:
+            close_at = float(hist.loc[p["date"], "Close"])
+            near_support = any(l["role"] == "supporto" and l["level"] > 0
+                                and abs(l["level"] - close_at) / l["level"] < 0.02 for l in sr_levels)
+            near_resistance = any(l["role"] == "resistenza" and l["level"] > 0
+                                   and abs(l["level"] - close_at) / l["level"] < 0.02 for l in sr_levels)
+            if p["direction"] == "rialzista" and (trend_struct == "ribassista" or near_support):
+                coherence = 1
+            if p["direction"] == "ribassista" and (trend_struct == "rialzista" or near_resistance):
+                coherence = 1
+        weighted.append({**p, "weight": w, "coherence": coherence})
+
+    cancelled = set()
+    for i in range(len(weighted) - 1):
+        a, b = weighted[i], weighted[i + 1]
+        if a["direction"] in ("rialzista", "ribassista") and b["direction"] in ("rialzista", "ribassista") \
+                and a["direction"] != b["direction"]:
+            try:
+                idx_a, idx_b = hist.index.get_loc(a["date"]), hist.index.get_loc(b["date"])
+            except KeyError:
+                continue
+            if idx_b - idx_a <= 2 and abs(a["weight"] - b["weight"]) <= 1:
+                cancelled.add(i)
+                cancelled.add(i + 1)
+
+    had_conflict = bool(cancelled)
+    survivors = [w for i, w in enumerate(weighted) if i not in cancelled]
+    survivors.sort(key=lambda p: (p["weight"] + p["coherence"], p["date"]), reverse=True)
+    top = survivors[:max_output]
+    top.sort(key=lambda p: p["date"])
+    return {"patterns": top, "had_conflict": had_conflict}
+
+
 # ---------------------------------------------------------------------------
-# Figure di prezzo con obiettivi di misurazione (cap. 5-6)
+# §8 — Figure di prezzo con stato (in formazione / completato / invalidato)
 # ---------------------------------------------------------------------------
 
-def detect_double_top_bottom(swing_highs, swing_lows, tolerance_pct: float = 3.0) -> list[dict]:
-    """Doppio massimo/minimo: due estremi simili con un ritracciamento
-    significativo tra i due. Obiettivo di prezzo = altezza della figura
-    proiettata dal punto di rottura (cap. 5.9.1)."""
+def detect_double_top_bottom(swing_highs, swing_lows, hist: pd.DataFrame, tolerance_pct: float = 3.0) -> list[dict]:
+    """Doppio massimo/minimo con stato esplicito: un pattern non confermato
+    dal break della neckline resta 'in formazione', non va pesato come
+    completato (§8)."""
     findings = []
+    close_last = _last(hist["Close"])
+
     if len(swing_highs) >= 2:
         h1, h2 = swing_highs[-2], swing_highs[-1]
         if abs(h1[1] - h2[1]) / h1[1] * 100 <= tolerance_pct:
@@ -409,8 +765,14 @@ def detect_double_top_bottom(swing_highs, swing_lows, tolerance_pct: float = 3.0
                 trough = min(between, key=lambda x: x[1])
                 height = h1[1] - trough[1]
                 target = trough[1] - height
+                state = "in formazione"
+                if close_last is not None:
+                    if close_last < trough[1]:
+                        state = "completato"
+                    elif close_last > max(h1[1], h2[1]) * 1.01:
+                        state = "invalidato"
                 findings.append({
-                    "pattern": "Doppio massimo (potenziale)", "direction": "ribassista",
+                    "pattern": "Doppio massimo", "direction": "ribassista", "state": state,
                     "neckline": round(trough[1], 4), "target": round(target, 4),
                     "note": f"Due massimi simili a {h1[1]:.2f} e {h2[1]:.2f}; sotto la rottura di "
                             f"{trough[1]:.2f} l'obiettivo minimo è ~{target:.2f}.",
@@ -423,8 +785,14 @@ def detect_double_top_bottom(swing_highs, swing_lows, tolerance_pct: float = 3.0
                 peak = max(between, key=lambda x: x[1])
                 height = peak[1] - l1[1]
                 target = peak[1] + height
+                state = "in formazione"
+                if close_last is not None:
+                    if close_last > peak[1]:
+                        state = "completato"
+                    elif close_last < min(l1[1], l2[1]) * 0.99:
+                        state = "invalidato"
                 findings.append({
-                    "pattern": "Doppio minimo (potenziale)", "direction": "rialzista",
+                    "pattern": "Doppio minimo", "direction": "rialzista", "state": state,
                     "neckline": round(peak[1], 4), "target": round(target, 4),
                     "note": f"Due minimi simili a {l1[1]:.2f} e {l2[1]:.2f}; sopra la rottura di "
                             f"{peak[1]:.2f} l'obiettivo minimo è ~{target:.2f}.",
@@ -432,17 +800,16 @@ def detect_double_top_bottom(swing_highs, swing_lows, tolerance_pct: float = 3.0
     return findings
 
 
-def detect_triangle(swing_highs, swing_lows, min_points: int = 3) -> dict | None:
-    """Triangolo simmetrico/ascendente/discendente dall'inclinazione delle
-    ultime `min_points` coppie di massimi/minimi. Obiettivo di prezzo =
-    altezza della base proiettata dal punto di rottura (cap. 6.23)."""
+def detect_triangle(swing_highs, swing_lows, hist: pd.DataFrame, min_points: int = 3) -> dict | None:
+    """Triangolo simmetrico/ascendente/discendente, con stato esplicito
+    (in formazione finché non c'è break oltre il lato del triangolo)."""
     if len(swing_highs) < min_points or len(swing_lows) < min_points:
         return None
     highs = swing_highs[-min_points:]
     lows = swing_lows[-min_points:]
     h_slope, l_slope = _slope(highs), _slope(lows)
     ref = (highs[-1][1] + lows[-1][1]) / 2 or 1
-    flat_thresh = 0.02 * ref / 30  # inclinazione trascurabile ~ entro 2%/mese
+    flat_thresh = 0.02 * ref / 30
 
     kind, direction = None, None
     if h_slope < -flat_thresh and l_slope > flat_thresh:
@@ -461,12 +828,219 @@ def detect_triangle(swing_highs, swing_lows, min_points: int = 3) -> dict | None
     elif direction == "ribassista":
         target = lows[-1][1] - base_height
 
+    close_last = _last(hist["Close"])
+    state = "in formazione"
+    if close_last is not None and direction in ("rialzista", "ribassista"):
+        boundary = highs[-1][1] if direction == "rialzista" else lows[-1][1]
+        if direction == "rialzista" and close_last > boundary:
+            state = "completato"
+        elif direction == "ribassista" and close_last < boundary:
+            state = "completato"
+
     return {
-        "pattern": kind, "direction": direction,
+        "pattern": kind, "direction": direction, "state": state,
         "target": round(target, 4) if target is not None else None,
         "note": f"{kind}: altezza della base (~{base_height:.2f}) proiettata dal punto di rottura "
                 f"per l'obiettivo minimo di prezzo" + (f" (~{target:.2f})." if target is not None else "."),
     }
+
+
+# ---------------------------------------------------------------------------
+# §11 — Motore di sintesi: Directional Score + Agreement Index
+# (adattamento — stessa formula di ta_core.py::synthesize, qui su dict
+# invece che su dataclass Vote, per uniformità con lo stile del modulo)
+# ---------------------------------------------------------------------------
+
+def synthesize_votes(votes: list[dict]) -> dict:
+    """Due output DISTINTI, non uno solo (§11):
+      - Directional Score D = sum(d*c) / sum(c)          in [-1, +1]
+      - Agreement Index   A = |sum(d*c)| / sum(c*|d|)    in [0, 1]
+    con un verdetto che distingue 'neutro laterale' da 'conflitto tra
+    segnali' (oggi appiattiti in un unico '-0.03 ~ neutro')."""
+    if not votes:
+        return {"D": 0.0, "A": 0.0, "verdict": "Dati insufficienti", "n_families": 0, "votes": []}
+
+    sum_c = sum(v["c"] for v in votes)
+    sum_dc = sum(v["d"] * v["c"] for v in votes)
+    sum_c_absd = sum(v["c"] * abs(v["d"]) for v in votes)
+
+    D = sum_dc / sum_c if sum_c > 0 else 0.0
+    A = abs(sum_dc) / sum_c_absd if sum_c_absd > 1e-9 else 0.0
+
+    small_D = abs(D) < 0.20
+    high_A = A >= 0.60
+
+    if small_D and high_A:
+        verdict = "Neutro: mercato senza direzione"
+    elif small_D and not high_A:
+        verdict = "Conflitto tra segnali: quadro non decidibile"
+    elif not small_D and high_A:
+        verdict = ("Rialzista" if D > 0 else "Ribassista") + " con buona coerenza"
+    else:
+        verdict = "Direzione debole e contrastata: cautela"
+
+    return {"D": round(D, 3), "A": round(A, 3), "verdict": verdict, "n_families": len(votes), "votes": votes}
+
+
+def build_thematic_flags(votes_by_family: dict, snap: dict) -> list[str]:
+    """Aggregazione dei segnali che raccontano la stessa storia (§11):
+    invece di disperdere stocastico ipercomprato + candela ribassista in
+    'neutri' separati, un unico flag tematico."""
+    flags = []
+    trend_simple = snap.get("trend", "indeterminato")
+
+    momentum_d = votes_by_family.get("Momentum", {}).get("d", 0.0)
+    candle_d = votes_by_family.get("Candlestick", {}).get("d", 0.0)
+
+    if trend_simple == "rialzista" and momentum_d < -0.3:
+        dettagli = ["oscillatori in ipercomprato"]
+        if candle_d < -0.05:
+            dettagli.append("segnali candlestick ribassisti recenti")
+        flags.append(f"Rischio di pullback di breve termine: {', '.join(dettagli)}, dentro un trend di fondo ancora rialzista.")
+    if trend_simple == "ribassista" and momentum_d > 0.3:
+        dettagli = ["oscillatori in ipervenduto"]
+        if candle_d > 0.05:
+            dettagli.append("segnali candlestick rialzisti recenti")
+        flags.append(f"Possibile rimbalzo tecnico di breve termine: {', '.join(dettagli)}, dentro un trend di fondo ancora ribassista.")
+
+    if snap.get("rsi_divergence"):
+        flags.append(f"Divergenza {snap['rsi_divergence']} tra prezzo e RSI: il momentum si sta indebolendo rispetto al prezzo.")
+    vol = snap.get("volume", {})
+    if vol.get("divergence"):
+        flags.append(f"Divergenza {vol['divergence']} tra prezzo e OBV: il flusso di volume non conferma pienamente il movimento di prezzo.")
+    if snap.get("bollinger", {}).get("squeeze"):
+        flags.append("Bande di Bollinger in compressione (squeeze): volatilità bassa, spesso precede un movimento più ampio (direzione non indicata).")
+    if snap.get("candlestick_conflict"):
+        flags.append("Segnali candlestick contrastanti nelle ultime sedute: bassa affidabilità, si annullano a vicenda.")
+
+    return flags
+
+
+def _build_votes(snap: dict) -> dict:
+    """Costruisce i voti (d, c) per ciascuna delle 7 famiglie (§11):
+    Trend, Medie, Momentum/Oscillatori, Volume, Pattern, Candlestick,
+    Volatilità."""
+    votes = {}
+
+    trend = snap["trend_detail"]
+    votes["Trend"] = {"family": "Trend", "d": trend["d"], "c": trend["c"]}
+
+    ma = snap["moving_averages"]
+    if ma["alignment"] == "rialzista":
+        votes["Medie"] = {"family": "Medie", "d": 0.7, "c": 0.7}
+    elif ma["alignment"] == "ribassista":
+        votes["Medie"] = {"family": "Medie", "d": -0.7, "c": 0.7}
+    else:
+        votes["Medie"] = {"family": "Medie", "d": 0.0, "c": 0.4 if ma["is_flat"] else 0.3}
+    if ma.get("golden_cross"):
+        votes["Medie"]["d"] = max(votes["Medie"]["d"], 0.6)
+        votes["Medie"]["c"] = max(votes["Medie"]["c"], 0.6)
+    if ma.get("death_cross"):
+        votes["Medie"]["d"] = min(votes["Medie"]["d"], -0.6)
+        votes["Medie"]["c"] = max(votes["Medie"]["c"], 0.6)
+
+    # Momentum/Oscillatori: letti nel CONTESTO del trend (§5) — in trend
+    # forte un oscillatore ipercomprato è conferma di forza, non segnale
+    # di vendita. Qui costruiamo comunque un voto "grezzo" di estremo, che
+    # la sintesi tematica (build_thematic_flags) e la sezione testuale
+    # ricontestualizzano esplicitamente.
+    mom_parts = []
+    rsig = snap.get("rsi_signal")
+    if rsig == "ipercomprato_forte":
+        mom_parts.append((-0.7, 0.6))
+    elif rsig == "ipercomprato":
+        mom_parts.append((-0.4, 0.5))
+    elif rsig == "ipervenduto_forte":
+        mom_parts.append((0.7, 0.6))
+    elif rsig == "ipervenduto":
+        mom_parts.append((0.4, 0.5))
+    else:
+        mom_parts.append((0.0, 0.3))
+
+    stoch = snap.get("stochastic") or {}
+    k, d = stoch.get("k_val"), stoch.get("d_val")
+    if k is not None and d is not None:
+        if d >= 80:
+            mom_parts.append((-0.4, 0.4))
+        elif d <= 20:
+            mom_parts.append((0.4, 0.4))
+        else:
+            mom_parts.append((0.0, 0.2))
+
+    macd_res = snap.get("macd", {})
+    if macd_res.get("hist_val") is not None:
+        strength = min(1.0, abs(macd_res["hist_val"]) / (abs(macd_res.get("macd_val") or 1) + 1e-9))
+        mom_parts.append((0.5 if macd_res["hist_val"] > 0 else -0.5, 0.5))
+
+    wr = snap.get("williams_r")
+    if wr is not None:
+        if wr >= -20:
+            mom_parts.append((-0.3, 0.3))
+        elif wr <= -80:
+            mom_parts.append((0.3, 0.3))
+
+    sum_c = sum(c for _, c in mom_parts)
+    d_mom = sum(dd * c for dd, c in mom_parts) / sum_c if sum_c > 0 else 0.0
+    votes["Momentum"] = {"family": "Momentum", "d": round(d_mom, 3), "c": min(0.9, sum_c / max(1, len(mom_parts)) + 0.2)}
+
+    # Volume: conferma del trend se espande nella direzione del trend
+    vol = snap.get("volume", {})
+    trend_sign = 1 if snap["trend"] == "rialzista" else (-1 if snap["trend"] == "ribassista" else 0)
+    if vol.get("volume_trend") == "in espansione" and trend_sign != 0:
+        votes["Volume"] = {"family": "Volume", "d": 0.5 * trend_sign, "c": 0.5}
+    elif vol.get("volume_trend") == "in contrazione":
+        votes["Volume"] = {"family": "Volume", "d": 0.0, "c": 0.2}
+    else:
+        votes["Volume"] = {"family": "Volume", "d": 0.0, "c": 0.15}
+
+    # Pattern grafici: solo quelli "completati" pesano pieno; "in formazione" pesa poco; "invalidato" escluso
+    cp_parts = []
+    for cp in snap.get("chart_patterns", []):
+        sign = 1 if cp["direction"] == "rialzista" else (-1 if cp["direction"] == "ribassista" else 0)
+        if sign == 0 or cp.get("state") == "invalidato":
+            continue
+        if cp.get("state") == "completato":
+            cp_parts.append((0.7 * sign, 0.6))
+        else:
+            cp_parts.append((0.3 * sign, 0.3))
+    if cp_parts:
+        sum_c = sum(c for _, c in cp_parts)
+        votes["Pattern"] = {"family": "Pattern", "d": round(sum(dd * c for dd, c in cp_parts) / sum_c, 3), "c": min(0.8, sum_c)}
+    else:
+        votes["Pattern"] = {"family": "Pattern", "d": 0.0, "c": 0.1}
+
+    # Candlestick: dal risultato gia' filtrato (peso*coerenza)
+    cs_patterns = snap.get("candlesticks", [])
+    if cs_patterns:
+        cs_parts = []
+        for cs in cs_patterns:
+            sign = 1 if cs["direction"] == "rialzista" else (-1 if cs["direction"] == "ribassista" else 0)
+            if sign == 0:
+                continue
+            w = cs.get("weight", 1) + cs.get("coherence", 0)
+            cs_parts.append((sign * min(1.0, 0.2 * w), min(0.6, 0.15 * w)))
+        if cs_parts:
+            sum_c = sum(c for _, c in cs_parts)
+            votes["Candlestick"] = {"family": "Candlestick", "d": round(sum(dd * c for dd, c in cs_parts) / sum_c, 3), "c": sum_c}
+        else:
+            votes["Candlestick"] = {"family": "Candlestick", "d": 0.0, "c": 0.1}
+    else:
+        votes["Candlestick"] = {"family": "Candlestick", "d": 0.0, "c": 0.1 if not snap.get("candlestick_conflict") else 0.05}
+
+    # Volatilita (Bollinger): principalmente informativa; un %B estremo
+    # ha una lieve inclinazione direzionale, non un segnale di inversione.
+    pb = snap.get("bollinger", {}).get("percent_b")
+    if pb is not None:
+        if pb >= 1:
+            votes["Volatilità"] = {"family": "Volatilità", "d": 0.2, "c": 0.25}
+        elif pb <= 0:
+            votes["Volatilità"] = {"family": "Volatilità", "d": -0.2, "c": 0.25}
+        else:
+            votes["Volatilità"] = {"family": "Volatilità", "d": 0.0, "c": 0.1}
+    else:
+        votes["Volatilità"] = {"family": "Volatilità", "d": 0.0, "c": 0.05}
+
+    return votes
 
 
 # ---------------------------------------------------------------------------
@@ -476,183 +1050,374 @@ def detect_triangle(swing_highs, swing_lows, min_points: int = 3) -> dict | None
 def technical_snapshot(symbol: str, horizon: str = "medio") -> dict | None:
     params = HORIZONS.get(horizon, HORIZONS["medio"])
     hist = dp.get_history(symbol, period=params["period"], interval=params["interval"])
-    if hist is None or hist.empty or len(hist) < max(30, params["ma_slow"] // 2):
+    min_bars = max(30, params["ma"][-1] // 2)
+    if hist is None or hist.empty or len(hist) < min_bars:
         return None
 
     close = hist["Close"]
     price = _last(close)
 
-    swing_highs, swing_lows = find_swing_points(hist, order=params["swing_order"])
-    trend = detect_trend(swing_highs, swing_lows)
-
-    mov_avg = compute_moving_averages(hist, params)
+    trend = analyze_trend(hist, params)
+    ma = compute_moving_averages(hist, params["ma"])
     boll = bollinger_bands(hist)
+
     rsi_series = rsi(close, params["rsi_period"])
     rsi_val = _last(rsi_series)
-    stoch = stochastic(hist, params["stoch_k"], params["stoch_d"], params["stoch_smooth"])
+    rsi_div = detect_rsi_divergence(close, rsi_series)
+
+    stoch = stochastic(hist, *params["stoch"]) if params.get("has_stochastic", True) else None
     macd_res = macd(close)
     wr_series = williams_r(hist)
     atr_series = atr(hist)
+    vol = volume_analysis(hist, params["trend_lookback"])
 
-    sr_levels = support_resistance_levels(hist, swing_highs, swing_lows)
-    candlesticks = detect_candlestick_patterns(hist, lookback=8)
+    sr_levels = support_resistance_levels(hist, trend["swing_highs"], trend["swing_lows"], ma,
+                                           params.get("sr_lookback_bars"))
+    raw_candles = detect_candlestick_patterns(hist, lookback=12)
+    candle_result = filter_candlestick_patterns(raw_candles, hist, trend["struct"], sr_levels)
 
-    chart_patterns = list(detect_double_top_bottom(swing_highs, swing_lows))
-    tri = detect_triangle(swing_highs, swing_lows)
+    chart_patterns = list(detect_double_top_bottom(trend["swing_highs"], trend["swing_lows"], hist))
+    tri = detect_triangle(trend["swing_highs"], trend["swing_lows"], hist)
     if tri:
         chart_patterns.append(tri)
 
-    support_line = fit_trendline(swing_lows[-4:]) if len(swing_lows) >= 2 else None
-    resistance_line = fit_trendline(swing_highs[-4:]) if len(swing_highs) >= 2 else None
+    atr_val = _last(atr_series)
+    support_points = trend["swing_lows"][-6:] if len(trend["swing_lows"]) >= 3 else []
+    resistance_points = trend["swing_highs"][-6:] if len(trend["swing_highs"]) >= 3 else []
+    support_line = fit_trendline(support_points, "support", hist, atr_val) if support_points else None
+    resistance_line = fit_trendline(resistance_points, "resistance", hist, atr_val) if resistance_points else None
 
-    return {
+    snap = {
         "symbol": symbol, "horizon": horizon, "horizon_label": params["label"],
         "hist": hist, "price": price,
-        "trend": trend,
-        "swing_highs": swing_highs, "swing_lows": swing_lows,
-        "moving_averages": mov_avg, "bollinger": boll,
+        "trend": trend["verdict_simple"], "trend_detail": trend,
+        "swing_highs": trend["swing_highs"], "swing_lows": trend["swing_lows"],
+        "moving_averages": ma, "bollinger": boll,
         "rsi": rsi_val, "rsi_signal": rsi_signal(rsi_val), "rsi_series": rsi_series,
+        "rsi_divergence": rsi_div,
         "stochastic": stoch, "macd": macd_res,
         "williams_r": _last(wr_series), "williams_r_series": wr_series,
-        "atr": _last(atr_series), "atr_series": atr_series,
+        "atr": atr_val, "atr_series": atr_series,
+        "volume": vol,
         "support_resistance": sr_levels,
-        "candlesticks": candlesticks,
+        "candlesticks": candle_result["patterns"], "candlestick_conflict": candle_result["had_conflict"],
         "chart_patterns": chart_patterns,
         "support_line": support_line, "resistance_line": resistance_line,
     }
 
+    votes_by_family = _build_votes(snap)
+    synthesis = synthesize_votes(list(votes_by_family.values()))
+    snap["votes_by_family"] = votes_by_family
+    snap["synthesis"] = synthesis
+    snap["thematic_flags"] = build_thematic_flags(votes_by_family, snap)
+    return snap
+
 
 def technical_score(snap: dict | None) -> float | None:
-    """Punteggio sintetico da -1 (segnali ribassisti) a +1 (segnali
-    rialzisti), media dei contributi di trend, medie mobili, oscillatori,
-    Bollinger, candele e figure di prezzo recenti."""
+    """Wrapper retro-compatibile: Directional Score del motore di sintesi
+    (§11). Preferire `snap['synthesis']` per l'Agreement Index e il
+    verdetto completo — questo resta solo per compatibilità puntuale."""
     if not snap:
         return None
-    parts = []
+    return snap.get("synthesis", {}).get("D")
 
-    if snap["trend"] == "rialzista":
-        parts.append(0.8)
-    elif snap["trend"] == "ribassista":
-        parts.append(-0.8)
-    elif snap["trend"] == "laterale":
-        parts.append(0.0)
 
+# ---------------------------------------------------------------------------
+# Sezioni narrative (una per famiglia) e sintesi finale
+# ---------------------------------------------------------------------------
+
+VERDICT_LABELS = {"rialzista": "Rialzista", "ribassista": "Ribassista", "laterale": "Laterale", "neutro": "Neutro"}
+VERDICT_BADGE_KIND = {"rialzista": "ok", "ribassista": "bad", "laterale": "warn", "neutro": "info"}
+
+
+def _section_trend(snap: dict) -> dict:
+    trend = snap["trend_detail"]
+    lines = [
+        f"{trend['verdict_label']}: struttura di swing {trend['struct']}, medie mobili allineate in "
+        f"ordine {trend['ma_alignment']}."
+    ]
+    if trend["verdict_simple"] == "rialzista" and "pullback" in trend["verdict_label"]:
+        lines.append(
+            "Le medie restano allineate al rialzo ma gli ultimi swing mostrano una debolezza di breve: "
+            "un ritracciamento dentro il trend, non un'inversione — a meno che la struttura non peggiori ulteriormente."
+        )
+    elif trend["verdict_simple"] == "ribassista" and "rimbalzo" in trend["verdict_label"]:
+        lines.append(
+            "Le medie restano allineate al ribasso ma gli ultimi swing mostrano un recupero di breve: "
+            "un rimbalzo tecnico dentro il trend ribassista, non necessariamente un'inversione."
+        )
+
+    price = snap.get("price")
+    sr = snap.get("support_resistance", [])
+    sup = nearest_support(sr, price) if price else None
+    res = nearest_resistance(sr, price) if price else None
+    if sup:
+        lines.append(
+            f"Il supporto più vicino sotto il prezzo attuale è a {sup['level']:.2f} "
+            f"(fonte: {sup['source']}, {sup['touches']} tocchi, robustezza {sup['robustness']:.1f})."
+        )
+    if res:
+        lines.append(
+            f"La resistenza più vicina sopra il prezzo attuale è a {res['level']:.2f} "
+            f"(fonte: {res['source']}, {res['touches']} tocchi, robustezza {res['robustness']:.1f})."
+        )
+
+    for key, label in (("support_line", "di supporto"), ("resistance_line", "di resistenza")):
+        line = snap.get(key)
+        if line:
+            lines.append(f"Trendline {label} confermata da {line['touches']} punti di contatto, validata contro la serie prezzi.")
+
+    verdict = trend["verdict_simple"]
+    return {"key": "trend", "icon": "📈", "title": "Trend e struttura del prezzo",
+            "verdict": verdict, "text": " ".join(lines)}
+
+
+def _section_moving_averages(snap: dict) -> dict:
     ma = snap["moving_averages"]
+    boll = snap["bollinger"]
+    lines = []
+    verdict = "neutro"
+
     if ma.get("alignment") == "rialzista":
-        parts.append(0.6)
+        lines.append(
+            f"Le medie mobili sono allineate in ordine rialzista: quella a {ma['fast_n']} periodi sta sopra "
+            f"quella a {ma['mid_n']}, a sua volta sopra quella a {ma['slow_n']} ({ma['fast_val']:.2f} / "
+            f"{ma['mid_val']:.2f} / {ma['slow_val']:.2f})."
+        )
+        verdict = "rialzista"
     elif ma.get("alignment") == "ribassista":
-        parts.append(-0.6)
+        lines.append(
+            f"Le medie mobili sono allineate in ordine ribassista: quella a {ma['fast_n']} periodi sta sotto "
+            f"quella a {ma['mid_n']}, a sua volta sotto quella a {ma['slow_n']} ({ma['fast_val']:.2f} / "
+            f"{ma['mid_val']:.2f} / {ma['slow_val']:.2f})."
+        )
+        verdict = "ribassista"
+    elif ma.get("is_flat"):
+        lines.append(
+            "Le medie mobili sono piatte e intrecciate: un mercato laterale, da non interpretare come un "
+            "cambio di trend ad ogni incrocio (whipsaw)."
+        )
+    else:
+        lines.append("Le medie mobili non sono allineate in un ordine chiaro: fase di transizione.")
+
     if ma.get("golden_cross"):
-        parts.append(0.7)
+        lines.append("Nelle ultime sedute la media media ha incrociato al rialzo quella lunga (golden cross).")
+        verdict = "rialzista"
     if ma.get("death_cross"):
-        parts.append(-0.7)
+        lines.append("Nelle ultime sedute la media media ha incrociato al ribasso quella lunga (death cross).")
+        verdict = "ribassista"
 
+    pb = boll.get("percent_b")
+    if pb is not None:
+        if pb >= 1:
+            lines.append(
+                "Il prezzo è sulla banda superiore di Bollinger o sopra: una condizione di forza che, "
+                "dentro un trend rialzista confermato, è più spesso conferma che segnale di vendita."
+            )
+        elif pb <= 0:
+            lines.append("Il prezzo è sulla banda inferiore di Bollinger o sotto: condizione di debolezza.")
+        else:
+            lines.append(f"Il prezzo è in posizione centrale tra le bande di Bollinger (%B = {pb:.2f}).")
+    if boll.get("squeeze"):
+        lines.append("Bande di Bollinger in compressione (squeeze): bassa volatilità, spesso precede un nuovo movimento — senza indicarne la direzione.")
+
+    return {"key": "moving_averages", "icon": "📉", "title": "Medie mobili e volatilità",
+            "verdict": verdict, "text": " ".join(lines)}
+
+
+def _section_momentum(snap: dict) -> dict:
+    lines = []
+    trend_simple = snap.get("trend")
     rsig = snap.get("rsi_signal")
-    if rsig == "ipercomprato_forte":
-        parts.append(-0.6)
-    elif rsig == "ipercomprato":
-        parts.append(-0.3)
-    elif rsig == "ipervenduto_forte":
-        parts.append(0.6)
-    elif rsig == "ipervenduto":
-        parts.append(0.3)
+    rsi_val = snap.get("rsi")
+    in_strong_trend = snap["trend_detail"]["c"] >= 0.8
 
-    stoch = snap.get("stochastic", {})
-    k, d = stoch.get("k_val"), stoch.get("d_val")
-    if k is not None and d is not None:
-        if d >= 80 and k < d:
-            parts.append(-0.4)
-        elif d <= 20 and k > d:
-            parts.append(0.4)
+    if rsi_val is not None:
+        base = f"L'RSI è a {rsi_val:.1f}"
+        if rsig in ("ipercomprato", "ipercomprato_forte"):
+            if trend_simple == "rialzista" and in_strong_trend:
+                lines.append(f"{base}, in ipercomprato — ma dentro un trend rialzista forte questo è più spesso conferma di forza che segnale di vendita imminente.")
+            else:
+                lines.append(f"{base}, in zona di ipercomprato.")
+        elif rsig in ("ipervenduto", "ipervenduto_forte"):
+            if trend_simple == "ribassista" and in_strong_trend:
+                lines.append(f"{base}, in ipervenduto — dentro un trend ribassista forte può restarci a lungo senza che il trend si inverta.")
+            else:
+                lines.append(f"{base}, in zona di ipervenduto.")
+        else:
+            lines.append(f"{base}, in zona neutrale: nessun eccesso evidente.")
+
+    if snap.get("rsi_divergence"):
+        lines.append(f"Divergenza {snap['rsi_divergence']} tra prezzo e RSI: il prezzo fa un nuovo estremo che l'RSI non conferma, segnale di indebolimento del momentum.")
+
+    stoch = snap.get("stochastic")
+    if stoch and stoch.get("k_val") is not None and stoch.get("d_val") is not None:
+        k, d = stoch["k_val"], stoch["d_val"]
+        if d >= 80:
+            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è in ipercomprato.")
+        elif d <= 20:
+            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è in ipervenduto.")
+        else:
+            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è in area neutrale.")
 
     macd_res = snap.get("macd", {})
     if macd_res.get("hist_val") is not None:
-        parts.append(0.4 if macd_res["hist_val"] > 0 else -0.4)
+        pos = "sopra" if macd_res["macd_val"] > macd_res["signal_val"] else "sotto"
+        lines.append(
+            f"Il MACD ha istogramma {'positivo' if macd_res['hist_val'] > 0 else 'negativo'} "
+            f"({macd_res['hist_val']:.3f}), linea MACD {pos} il segnale."
+        )
 
-    pb = snap.get("bollinger", {}).get("percent_b")
-    if pb is not None:
-        if pb >= 1:
-            parts.append(-0.3)
-        elif pb <= 0:
-            parts.append(0.3)
+    wr = snap.get("williams_r")
+    if wr is not None:
+        if wr >= -20:
+            lines.append(f"Il Williams %R ({wr:.1f}) conferma l'ipercomprato.")
+        elif wr <= -80:
+            lines.append(f"Il Williams %R ({wr:.1f}) conferma l'ipervenduto.")
 
-    for cs in snap.get("candlesticks", [])[-3:]:
-        if cs["direction"] == "rialzista":
-            parts.append(0.3)
-        elif cs["direction"] == "ribassista":
-            parts.append(-0.3)
+    mom_vote = snap.get("votes_by_family", {}).get("Momentum", {})
+    d = mom_vote.get("d", 0.0)
+    verdict = "rialzista" if d > 0.2 else ("ribassista" if d < -0.2 else "neutro")
 
-    for cp in snap.get("chart_patterns", []):
-        if cp["direction"] == "rialzista":
-            parts.append(0.5)
-        elif cp["direction"] == "ribassista":
-            parts.append(-0.5)
+    return {"key": "momentum", "icon": "🌊", "title": "Momentum e oscillatori",
+            "verdict": verdict, "text": " ".join(lines)}
 
-    if not parts:
+
+def _section_volume(snap: dict) -> dict:
+    vol = snap.get("volume", {})
+    lines = []
+    trend_simple = snap.get("trend")
+
+    if vol.get("volume_trend"):
+        lines.append(f"Il volume è {vol['volume_trend']} rispetto al periodo precedente.")
+        if vol["volume_trend"] == "in espansione" and trend_simple in ("rialzista", "ribassista"):
+            lines.append(f"L'espansione di volume conferma il trend {trend_simple} in corso.")
+        elif vol["volume_trend"] == "in contrazione":
+            lines.append("Un volume in contrazione invita a maggiore cautela sulla tenuta del movimento in corso.")
+
+    if vol.get("divergence"):
+        lines.append(f"Divergenza {vol['divergence']} tra prezzo e OBV (On-Balance Volume): il flusso di volume non conferma pienamente il movimento di prezzo — un early warning, non una certezza.")
+    if vol.get("volume_spike"):
+        lines.append("L'ultima seduta ha un volume nettamente superiore alla media recente: se coincide con una rottura di livello, ne aumenta l'affidabilità.")
+    if not lines:
+        lines.append("Nessun segnale particolare dal volume in questo momento.")
+
+    vote = snap.get("votes_by_family", {}).get("Volume", {})
+    d = vote.get("d", 0.0)
+    verdict = "rialzista" if d > 0.15 else ("ribassista" if d < -0.15 else "neutro")
+    return {"key": "volume", "icon": "📊", "title": "Volume", "verdict": verdict, "text": " ".join(lines)}
+
+
+def _section_patterns(snap: dict) -> dict:
+    lines = []
+    cps = snap.get("chart_patterns", [])
+    css = snap.get("candlesticks", [])
+
+    if not cps and not css and not snap.get("candlestick_conflict"):
+        lines.append(
+            "Non emergono figure grafiche (doppi massimi/minimi, triangoli) né candele particolarmente "
+            "significative nell'orizzonte selezionato: non è un'anomalia, la maggior parte delle sedute "
+            "non produce pattern netti."
+        )
+        return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
+                "verdict": "neutro", "text": " ".join(lines)}
+
+    for cp in cps:
+        lines.append(f"Figura di tipo {cp['pattern'].lower()} ({cp['state']}): {cp['note']}")
+    if snap.get("candlestick_conflict") and not css:
+        lines.append("Segnali candlestick contrastanti nelle ultime sedute: si annullano a vicenda, bassa affidabilità.")
+    for cs in css:
+        lines.append(f"Candela del {cs['date'].strftime('%d/%m')}: {cs['pattern']} — {cs['note']}")
+
+    pattern_d = snap.get("votes_by_family", {}).get("Pattern", {}).get("d", 0.0)
+    candle_d = snap.get("votes_by_family", {}).get("Candlestick", {}).get("d", 0.0)
+    combined = pattern_d + candle_d
+    verdict = "rialzista" if combined > 0.15 else ("ribassista" if combined < -0.15 else "neutro")
+
+    return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
+            "verdict": verdict, "text": " ".join(lines)}
+
+
+def _write_synthesis(snap: dict, sections: list[dict], entry_price: float | None = None) -> str:
+    """Sintesi finale basata sul Directional Score + Agreement Index
+    (§11), non sul conteggio dei verdetti di sezione: distingue "neutro
+    per assenza di direzione" da "conflitto tra segnali"."""
+    synthesis = snap["synthesis"]
+    D, A, verdict = synthesis["D"], synthesis["A"], synthesis["verdict"]
+
+    lines = [
+        f"Directional Score: {D:+.2f} (da -1 fortemente ribassista a +1 fortemente rialzista) · "
+        f"Agreement Index: {A:.2f} (0 = famiglie in conflitto, 1 = pienamente allineate). {verdict}."
+    ]
+
+    for flag in snap.get("thematic_flags", []):
+        lines.append(flag)
+
+    sr = snap.get("support_resistance", [])
+    price = snap.get("price")
+    watch = []
+    sup = nearest_support(sr, price) if price else None
+    res = nearest_resistance(sr, price) if price else None
+    if sup:
+        watch.append(f"la tenuta del supporto a {sup['level']:.2f}")
+    if res:
+        watch.append(f"un'eventuale rottura della resistenza a {res['level']:.2f}")
+    if watch:
+        lines.append("I livelli da monitorare per capire se questo quadro cambia sono " + " e ".join(watch) + ".")
+
+    if entry_price:
+        ctx = entry_context(snap, entry_price)
+        if ctx:
+            extra = " ".join(ctx["notes"][1:]) if len(ctx["notes"]) > 1 else "nessuna nota aggiuntiva in questo momento."
+            lines.append(
+                f"Rispetto al tuo prezzo di riferimento ({entry_price:.2f}), sei "
+                f"{'sopra' if ctx['pl_pct'] >= 0 else 'sotto'} del {abs(ctx['pl_pct']):.1f}%: {extra}"
+            )
+
+    lines.append("Resta un quadro statistico basato su dati passati, non una previsione né una raccomandazione operativa.")
+    return " ".join(lines)
+
+
+def build_narrative(snap: dict | None, entry_price: float | None = None) -> dict | None:
+    """Analisi sezionata in stile 'report': una sezione per famiglia
+    (trend, medie/volatilità, momentum, volume, pattern/candlestick), più
+    una sintesi finale basata su Directional Score + Agreement Index."""
+    if not snap:
         return None
-    return max(-1.0, min(1.0, sum(parts) / len(parts)))
+    sections = [
+        _section_trend(snap),
+        _section_moving_averages(snap),
+        _section_momentum(snap),
+        _section_volume(snap),
+        _section_patterns(snap),
+    ]
+    return {"sections": sections, "synthesis": _write_synthesis(snap, sections, entry_price)}
 
 
 def interpret(snap: dict | None) -> list[str]:
-    """Dettaglio testuale (il 'perché') dietro il punteggio tecnico."""
-    if not snap:
+    """Dettaglio testuale piatto (compatibilità con usi puntuali): estrae
+    le righe di testo di tutte le sezioni."""
+    narrative = build_narrative(snap)
+    if not narrative:
         return []
-    lines = [f"Trend {snap['horizon_label'].lower()}: {snap['trend']} "
-             f"(massimi/minimi crescenti o decrescenti)."]
-
-    ma = snap["moving_averages"]
-    if ma.get("alignment") and None not in (ma.get("fast_val"), ma.get("mid_val"), ma.get("slow_val")):
-        lines.append(f"Medie mobili: allineamento {ma['alignment']} "
-                      f"({ma['fast_val']:.2f} / {ma['mid_val']:.2f} / {ma['slow_val']:.2f}).")
-    if ma.get("golden_cross"):
-        lines.append("Incrocio rialzista recente tra media media e media lunga (golden cross).")
-    if ma.get("death_cross"):
-        lines.append("Incrocio ribassista recente tra media media e media lunga (death cross).")
-
-    if snap.get("rsi") is not None:
-        lines.append(f"RSI: {snap['rsi']:.1f} — {snap['rsi_signal']} (ipercomprato >70, ipervenduto <30).")
-
-    stoch = snap["stochastic"]
-    if stoch.get("k_val") is not None and stoch.get("d_val") is not None:
-        lines.append(f"Stocastico %K/%D: {stoch['k_val']:.1f} / {stoch['d_val']:.1f} (soglie 80/20).")
-
-    macd_res = snap["macd"]
-    if macd_res.get("hist_val") is not None and macd_res.get("macd_val") is not None:
-        pos = "sopra" if macd_res["macd_val"] > macd_res["signal_val"] else "sotto"
-        lines.append(f"MACD: istogramma {'positivo' if macd_res['hist_val'] > 0 else 'negativo'} "
-                      f"({macd_res['hist_val']:.3f}), linea MACD {pos} il segnale.")
-
-    boll = snap["bollinger"]
-    if boll.get("percent_b") is not None:
-        posizione = ("vicino/oltre la banda superiore" if boll["percent_b"] >= 0.8
-                      else "vicino/oltre la banda inferiore" if boll["percent_b"] <= 0.2 else "centrale")
-        extra = " Bande in compressione: possibile nuovo movimento in arrivo." if boll.get("squeeze") else ""
-        lines.append(f"Bande di Bollinger: %B = {boll['percent_b']:.2f} ({posizione}).{extra}")
-
-    for lvl in snap.get("support_resistance", []):
-        lines.append(f"{lvl['role'].capitalize()} a {lvl['level']:.2f} ({lvl['touches']} tocchi).")
-
-    for cs in snap.get("candlesticks", [])[-3:]:
-        lines.append(f"Candela {cs['date'].strftime('%d/%m')}: {cs['pattern']} — {cs['note']}")
-
-    for cp in snap.get("chart_patterns", []):
-        lines.append(f"Figura di prezzo: {cp['pattern']} — {cp['note']}")
-
+    lines = []
+    for sec in narrative["sections"]:
+        lines.append(sec["text"])
     return lines
 
 
 def chart_shapes(snap: dict) -> tuple[list, list]:
     """Shapes/annotations Plotly per disegnare trendlines, livelli di
-    supporto/resistenza e marker delle candele direttamente sul grafico
-    prezzo — la resa concreta del 'disegnare sul grafico'."""
+    supporto/resistenza e marker delle candele direttamente sul grafico."""
     shapes, annotations = [], []
     hist = snap["hist"]
     x_start, x_end = hist.index[0], hist.index[-1]
 
     for lvl in snap.get("support_resistance", []):
         color = "#1E8E5A" if lvl["role"] == "supporto" else "#C0392B"
+        width = 1 if lvl["source"] != "swing" else max(1, min(3, round(lvl["robustness"] / 2)))
         shapes.append(dict(type="line", x0=x_start, x1=x_end, y0=lvl["level"], y1=lvl["level"],
-                            line=dict(color=color, width=1, dash="dot")))
+                            line=dict(color=color, width=width, dash="dot")))
 
     for line_key, color in (("support_line", "#1E8E5A"), ("resistance_line", "#C0392B")):
         line = snap.get(line_key)
@@ -662,6 +1427,8 @@ def chart_shapes(snap: dict) -> tuple[list, list]:
                                 line=dict(color=color, width=1.5)))
 
     for cs in snap.get("candlesticks", []):
+        if cs["date"] not in hist.index:
+            continue
         if cs["direction"] == "rialzista":
             y = float(hist.loc[cs["date"], "Low"]) * 0.985
             arrow_color = "#1E8E5A"
@@ -681,30 +1448,19 @@ def entry_context(snap: dict | None, entry_price: float | None) -> dict | None:
     """Contestualizza uno snapshot tecnico rispetto a un prezzo di
     ingresso — il prezzo medio di carico reale (da un titolo in
     portafoglio) o un prezzo di riferimento pianificato (da un titolo in
-    Preferiti non ancora comprato). Le note restano descrittive/statistiche,
-    non indicazioni operative dirette."""
+    Preferiti non ancora comprato). Le note restano descrittive/statistiche."""
     if not snap or not entry_price or entry_price <= 0 or snap.get("price") is None:
         return None
 
     price = snap["price"]
     pl_pct = (price - entry_price) / entry_price * 100
-    notes = []
-    notes.append(
-        f"Sei {'sopra' if pl_pct >= 0 else 'sotto'} il prezzo di riferimento "
-        f"({entry_price:.2f}) del {pl_pct:+.1f}%."
-    )
+    notes = [f"Sei {'sopra' if pl_pct >= 0 else 'sotto'} il prezzo di riferimento ({entry_price:.2f}) del {pl_pct:+.1f}%."]
 
     rsig = snap.get("rsi_signal")
     if pl_pct > 0 and rsig in ("ipercomprato", "ipercomprato_forte"):
-        notes.append(
-            "Il titolo è in ipercomprato mentre sei in guadagno: in questa condizione alcuni "
-            "investitori valutano una presa di profitto parziale, da soppesare col proprio orizzonte."
-        )
+        notes.append("Il titolo è in ipercomprato mentre sei in guadagno: in questa condizione alcuni investitori valutano una presa di profitto parziale, da soppesare col proprio orizzonte.")
     if pl_pct < 0 and rsig in ("ipervenduto", "ipervenduto_forte"):
-        notes.append(
-            "Il titolo è in ipervenduto mentre sei in perdita: storicamente è una zona dove il "
-            "ribasso rallenta più spesso, ma non è garanzia di un'inversione."
-        )
+        notes.append("Il titolo è in ipervenduto mentre sei in perdita: storicamente è una zona dove il ribasso rallenta più spesso, ma non è garanzia di un'inversione.")
     if pl_pct < 0 and snap.get("trend") == "ribassista":
         notes.append("Il trend resta ribassista: nessun segnale tecnico di inversione rilevato per ora.")
     if pl_pct > 0 and snap.get("trend") == "rialzista":
@@ -718,369 +1474,17 @@ def entry_context(snap: dict | None, entry_price: float | None) -> dict | None:
         if lvl["role"] == "supporto" and price > lvl["level"]:
             dist = (price - lvl["level"]) / price * 100
             if dist < 5:
-                notes.append(
-                    f"Sei vicino (~{dist:.1f}%) a un supporto a {lvl['level']:.2f}: livello spesso "
-                    "osservato come area di tenuta del prezzo."
-                )
+                notes.append(f"Sei vicino (~{dist:.1f}%) a un supporto a {lvl['level']:.2f}.")
         if lvl["role"] == "resistenza" and price < lvl["level"]:
             dist = (lvl["level"] - price) / price * 100
             if dist < 5:
-                notes.append(
-                    f"Sei vicino (~{dist:.1f}%) a una resistenza a {lvl['level']:.2f}: livello spesso "
-                    "osservato come area di freno del prezzo."
-                )
+                notes.append(f"Sei vicino (~{dist:.1f}%) a una resistenza a {lvl['level']:.2f}.")
 
     return {"entry_price": entry_price, "price": price, "pl_pct": pl_pct, "notes": notes}
 
 
-VERDICT_LABELS = {"rialzista": "Rialzista", "ribassista": "Ribassista", "neutro": "Neutro"}
-VERDICT_BADGE_KIND = {"rialzista": "ok", "ribassista": "bad", "neutro": "info"}
-
-
-def _section_trend(snap: dict) -> dict:
-    trend = snap["trend"]
-    lines = []
-    if trend == "rialzista":
-        lines.append(
-            "Il titolo è in un trend rialzista: massimi e minimi delle ultime oscillazioni sono "
-            "progressivamente più alti, il segno classico di una fase di salita che tende ad "
-            "autoalimentarsi finché non si rompe."
-        )
-        verdict = "rialzista"
-    elif trend == "ribassista":
-        lines.append(
-            "Il titolo è in un trend ribassista: massimi e minimi sono progressivamente più bassi, "
-            "la controparte discendente dello stesso principio."
-        )
-        verdict = "ribassista"
-    elif trend == "laterale":
-        lines.append(
-            "Il titolo si muove lateralmente: non emerge una sequenza chiara di massimi e minimi "
-            "crescenti o decrescenti — il mercato non ha ancora scelto una direzione precisa su "
-            "questo orizzonte."
-        )
-        verdict = "neutro"
-    else:
-        lines.append(
-            "Non ci sono ancora abbastanza punti di riferimento sul grafico per stabilire un trend "
-            "chiaro su questo orizzonte temporale."
-        )
-        verdict = "neutro"
-
-    sr = snap.get("support_resistance", [])
-    supports = [l for l in sr if l["role"] == "supporto"]
-    resistances = [l for l in sr if l["role"] == "resistenza"]
-    if supports:
-        nearest = max(supports, key=lambda l: l["level"])
-        lines.append(
-            f"Il supporto più vicino sotto il prezzo attuale (un livello dove la domanda ha fermato "
-            f"i ribassi in passato) è a {nearest['level']:.2f}, toccato {nearest['touches']} volte."
-        )
-    if resistances:
-        nearest = min(resistances, key=lambda l: l["level"])
-        lines.append(
-            f"La resistenza più vicina sopra il prezzo attuale (un livello dove l'offerta ha fermato "
-            f"i rialzi in passato) è a {nearest['level']:.2f}, toccata {nearest['touches']} volte."
-        )
-
-    for key, label in (("support_line", "di supporto"), ("resistance_line", "di resistenza")):
-        line = snap.get(key)
-        if line:
-            stato = ("confermata da almeno tre punti di contatto" if line["confirmed"]
-                      else "ancora provvisoria, con solo due punti di contatto")
-            lines.append(f"La trendline {label} disegnata sugli estremi recenti è {stato}.")
-
-    return {"key": "trend", "icon": "📈", "title": "Trend e struttura del prezzo",
-            "verdict": verdict, "text": " ".join(lines)}
-
-
-def _section_moving_averages(snap: dict) -> dict:
-    ma = snap["moving_averages"]
-    boll = snap["bollinger"]
-    params = HORIZONS[snap["horizon"]]
-    lines = []
-    verdict = "neutro"
-
-    if ma.get("alignment") == "rialzista":
-        lines.append(
-            f"Le medie mobili sono allineate in ordine rialzista: quella a {params['ma_fast']} periodi "
-            f"sta sopra quella a {params['ma_mid']}, a sua volta sopra quella a {params['ma_slow']} — "
-            "un contesto che storicamente accompagna i trend più solidi."
-        )
-        verdict = "rialzista"
-    elif ma.get("alignment") == "ribassista":
-        lines.append(
-            f"Le medie mobili sono allineate in ordine ribassista: quella a {params['ma_fast']} periodi "
-            f"sta sotto quella a {params['ma_mid']}, a sua volta sotto quella a {params['ma_slow']}."
-        )
-        verdict = "ribassista"
-    else:
-        lines.append(
-            "Le medie mobili non sono allineate in un ordine chiaro: spesso un segno di fase di "
-            "transizione o di mercato indeciso."
-        )
-
-    if ma.get("golden_cross"):
-        lines.append(
-            "Nelle ultime sedute la media a periodo medio ha incrociato al rialzo quella più lunga "
-            "(golden cross): un evento tecnico spesso letto come conferma di un cambio di fase verso l'alto."
-        )
-        verdict = "rialzista"
-    if ma.get("death_cross"):
-        lines.append(
-            "Nelle ultime sedute la media a periodo medio ha incrociato al ribasso quella più lunga "
-            "(death cross): l'evento equivalente in chiave ribassista."
-        )
-        verdict = "ribassista"
-
-    pb = boll.get("percent_b")
-    if pb is not None:
-        if pb >= 1:
-            lines.append(
-                "Il prezzo è sulla banda superiore di Bollinger o sopra (una fascia di volatilità "
-                "costruita a due deviazioni standard dalla media a 20 periodi): una condizione di "
-                "forza che a volte precede anche una pausa."
-            )
-        elif pb <= 0:
-            lines.append(
-                "Il prezzo è sulla banda inferiore di Bollinger o sotto: una condizione di debolezza "
-                "che nei titoli storicamente più solidi tende a essere temporanea."
-            )
-        else:
-            lines.append(
-                f"Il prezzo è in posizione centrale tra le bande di Bollinger (%B = {pb:.2f}), senza "
-                "eccessi in nessuna delle due direzioni."
-            )
-    if boll.get("squeeze"):
-        lines.append(
-            "Le bande di Bollinger sono in una fase di compressione (squeeze): la volatilità è bassa, "
-            "una condizione che spesso precede un nuovo movimento più ampio — senza però indicarne "
-            "la direzione."
-        )
-
-    return {"key": "moving_averages", "icon": "📉", "title": "Medie mobili e volatilità",
-            "verdict": verdict, "text": " ".join(lines)}
-
-
-def _section_momentum(snap: dict) -> dict:
-    lines = []
-    leans = []
-
-    rsig = snap.get("rsi_signal")
-    rsi_val = snap.get("rsi")
-    if rsi_val is not None:
-        if rsig in ("ipercomprato", "ipercomprato_forte"):
-            lines.append(
-                f"L'RSI (indice di forza relativa: misura se i rialzi recenti sono stati eccessivi) "
-                f"è a {rsi_val:.1f}, in zona di ipercomprato."
-            )
-            leans.append(-1)
-        elif rsig in ("ipervenduto", "ipervenduto_forte"):
-            lines.append(
-                f"L'RSI è a {rsi_val:.1f}, in zona di ipervenduto: il titolo ha subito ribassi rapidi "
-                "negli ultimi periodi."
-            )
-            leans.append(1)
-        else:
-            lines.append(f"L'RSI è a {rsi_val:.1f}, in zona neutrale: nessun eccesso evidente.")
-            leans.append(0)
-
-    stoch = snap.get("stochastic", {})
-    k, d = stoch.get("k_val"), stoch.get("d_val")
-    if k is not None and d is not None:
-        if d >= 80:
-            agree = " coerente con l'RSI" if rsig in ("ipercomprato", "ipercomprato_forte") else ""
-            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è anch'esso in ipercomprato{agree}.")
-            leans.append(-1)
-        elif d <= 20:
-            agree = " coerente con l'RSI" if rsig in ("ipervenduto", "ipervenduto_forte") else ""
-            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è in ipervenduto{agree}.")
-            leans.append(1)
-        else:
-            lines.append(f"Lo stocastico (%K {k:.1f} / %D {d:.1f}) è in area neutrale.")
-            leans.append(0)
-
-    macd_res = snap.get("macd", {})
-    if macd_res.get("hist_val") is not None:
-        if macd_res["hist_val"] > 0:
-            lines.append(
-                "Il MACD ha istogramma positivo, con la linea MACD sopra il segnale: il momentum di "
-                "breve termine è a favore dei compratori."
-            )
-            leans.append(1)
-        else:
-            lines.append(
-                "Il MACD ha istogramma negativo, con la linea MACD sotto il segnale: il momentum di "
-                "breve termine è a favore dei venditori."
-            )
-            leans.append(-1)
-
-    wr = snap.get("williams_r")
-    if wr is not None:
-        if wr >= -20:
-            lines.append(f"Il Williams %R ({wr:.1f}) è anch'esso in ipercomprato.")
-            leans.append(-1)
-        elif wr <= -80:
-            lines.append(f"Il Williams %R ({wr:.1f}) è anch'esso in ipervenduto.")
-            leans.append(1)
-
-    if leans:
-        pos, neg = leans.count(1), leans.count(-1)
-        if pos >= 2 and neg == 0:
-            lines.append("Nel complesso gli oscillatori concordano su un momentum rialzista.")
-            verdict = "rialzista"
-        elif neg >= 2 and pos == 0:
-            lines.append("Nel complesso gli oscillatori concordano su un momentum ribassista.")
-            verdict = "ribassista"
-        elif pos and neg:
-            lines.append(
-                "Gli oscillatori danno però segnali contrastanti tra loro: alcuni indicano forza, "
-                "altri debolezza — una situazione che invita a maggiore cautela nell'interpretazione."
-            )
-            verdict = "neutro"
-        else:
-            verdict = "neutro"
-    else:
-        verdict = "neutro"
-
-    return {"key": "momentum", "icon": "🌊", "title": "Momentum e oscillatori",
-            "verdict": verdict, "text": " ".join(lines)}
-
-
-def _section_patterns(snap: dict) -> dict:
-    lines = []
-    verdict = "neutro"
-    cps = snap.get("chart_patterns", [])
-    css = snap.get("candlesticks", [])[-3:]
-
-    if not cps and not css:
-        lines.append(
-            "Non emergono figure grafiche (doppi massimi/minimi, triangoli) né candele "
-            "particolarmente significative nell'orizzonte selezionato: non è un'anomalia, la "
-            "maggior parte delle sedute non produce pattern netti."
-        )
-        return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
-                "verdict": verdict, "text": " ".join(lines)}
-
-    leans = []
-    for cp in cps:
-        lines.append(f"È stata individuata una figura di tipo {cp['pattern'].lower()}: {cp['note']}")
-        leans.append(1 if cp["direction"] == "rialzista" else (-1 if cp["direction"] == "ribassista" else 0))
-    for cs in css:
-        lines.append(
-            f"Tra le ultime candele, il {cs['date'].strftime('%d/%m')} si segnala un "
-            f"{cs['pattern'].lower()}: {cs['note']}"
-        )
-        leans.append(1 if cs["direction"] == "rialzista" else (-1 if cs["direction"] == "ribassista" else 0))
-
-    pos, neg = leans.count(1), leans.count(-1)
-    if pos > neg:
-        verdict = "rialzista"
-    elif neg > pos:
-        verdict = "ribassista"
-
-    return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
-            "verdict": verdict, "text": " ".join(lines)}
-
-
-def _write_synthesis(snap: dict, sections: list[dict], entry_price: float | None = None) -> str:
-    """Il 'pensiero critico' finale: non concatena le sezioni, ragiona su
-    quanto concordano o si contraddicono tra loro, indica cosa monitorare
-    e — se fornito — lega il tutto al prezzo di ingresso."""
-    verdicts = {s["key"]: s["verdict"] for s in sections}
-    votes = list(verdicts.values())
-    pos, neg = votes.count("rialzista"), votes.count("ribassista")
-
-    lines = []
-    if pos >= 3 and neg == 0:
-        lines.append(
-            "Il quadro complessivo è coerentemente rialzista: trend, medie mobili e momentum puntano "
-            "nella stessa direzione. Quando più famiglie di indicatori concordano il segnale tende a "
-            "essere statisticamente più solido rispetto a quando si contraddicono — ma nessuna "
-            "convergenza è una garanzia di quanto accadrà dopo."
-        )
-    elif neg >= 3 and pos == 0:
-        lines.append(
-            "Il quadro complessivo è coerentemente ribassista: trend, medie mobili e momentum "
-            "puntano tutti nella stessa direzione verso il basso. Anche qui la convergenza rende il "
-            "quadro più solido, non certo."
-        )
-    elif pos > neg:
-        lines.append(
-            "Il quadro è prevalentemente rialzista, ma non del tutto unanime: almeno un fattore si "
-            "muove in controtendenza o resta neutro rispetto al resto dell'analisi. Vale la pena "
-            "capire quale, prima di trarre conclusioni."
-        )
-    elif neg > pos:
-        lines.append(
-            "Il quadro è prevalentemente ribassista, ma non del tutto unanime: almeno un fattore si "
-            "muove in controtendenza o resta neutro rispetto al resto dell'analisi."
-        )
-    else:
-        lines.append(
-            "Il quadro è misto: non c'è una direzione dominante tra le famiglie di indicatori "
-            "analizzate — trend, medie mobili, momentum e pattern non raccontano la stessa storia. "
-            "In condizioni come questa molti analisti aspettano una conferma ulteriore prima di "
-            "considerare il quadro tecnico decisivo."
-        )
-
-    if verdicts.get("trend") == "rialzista" and verdicts.get("momentum") == "ribassista":
-        lines.append(
-            "In particolare, il trend di fondo resta rialzista ma il momentum è già in ipercomprato: "
-            "una combinazione tipica delle fasi avanzate di un rally, dove il prezzo può ancora "
-            "salire ma con un margine di sicurezza più basso."
-        )
-    if verdicts.get("trend") == "ribassista" and verdicts.get("momentum") == "rialzista":
-        lines.append(
-            "In particolare, il trend di fondo resta ribassista ma il momentum è già in ipervenduto: "
-            "una combinazione che spesso precede un rimbalzo tecnico, senza che questo implichi "
-            "necessariamente un'inversione del trend principale."
-        )
-
-    sr = snap.get("support_resistance", [])
-    watch = []
-    supports = [l for l in sr if l["role"] == "supporto"]
-    resistances = [l for l in sr if l["role"] == "resistenza"]
-    if supports:
-        watch.append(f"la tenuta del supporto a {max(supports, key=lambda l: l['level'])['level']:.2f}")
-    if resistances:
-        watch.append(f"un'eventuale rottura della resistenza a {min(resistances, key=lambda l: l['level'])['level']:.2f}")
-    if watch:
-        lines.append("I livelli da monitorare per capire se questo quadro cambia sono " + " e ".join(watch) + ".")
-
-    if entry_price:
-        ctx = entry_context(snap, entry_price)
-        if ctx:
-            extra = " ".join(ctx["notes"][1:]) if len(ctx["notes"]) > 1 else "nessuna nota aggiuntiva in questo momento."
-            lines.append(
-                f"Rispetto al tuo prezzo di riferimento ({entry_price:.2f}), sei "
-                f"{'sopra' if ctx['pl_pct'] >= 0 else 'sotto'} del {abs(ctx['pl_pct']):.1f}%: {extra}"
-            )
-
-    lines.append("Resta un quadro statistico basato su dati passati, non una previsione né una raccomandazione operativa.")
-    return " ".join(lines)
-
-
-def build_narrative(snap: dict | None, entry_price: float | None = None) -> dict | None:
-    """Analisi sezionata in stile 'report': una sezione per famiglia di
-    indicatori (trend, medie mobili/volatilità, momentum, pattern), ognuna
-    con un paragrafo e un verdetto, più una sintesi finale che ragiona
-    sull'accordo/disaccordo tra le sezioni."""
-    if not snap:
-        return None
-    sections = [
-        _section_trend(snap),
-        _section_moving_averages(snap),
-        _section_momentum(snap),
-        _section_patterns(snap),
-    ]
-    return {"sections": sections, "synthesis": _write_synthesis(snap, sections, entry_price)}
-
-
 def numeric_summary(snap: dict) -> list[tuple[str, str]]:
-    """Elenco (etichetta, valore) di tutti i numeri calcolati — per chi
-    vuole i dati grezzi (supporti, resistenze, valori delle medie, degli
-    oscillatori, dell'ATR...) senza dover leggere il testo descrittivo."""
+    """Elenco (etichetta, valore) di tutti i numeri calcolati."""
     if not snap:
         return []
     sr = snap.get("support_resistance", [])
@@ -1088,9 +1492,8 @@ def numeric_summary(snap: dict) -> list[tuple[str, str]]:
     resistances = sorted(l["level"] for l in sr if l["role"] == "resistenza")
     ma = snap["moving_averages"]
     boll = snap["bollinger"]
-    stoch = snap["stochastic"]
+    stoch = snap.get("stochastic") or {}
     macd_res = snap["macd"]
-    params = HORIZONS[snap["horizon"]]
 
     def _fmt(x, decimals=2):
         return f"{x:.{decimals}f}" if x is not None else "n/d"
@@ -1098,14 +1501,14 @@ def numeric_summary(snap: dict) -> list[tuple[str, str]]:
     rows = [
         ("Supporti", ", ".join(f"{s:.2f}" for s in supports) or "n/d"),
         ("Resistenze", ", ".join(f"{r:.2f}" for r in resistances) or "n/d"),
-        (f"Media mobile ({params['ma_fast']})", _fmt(ma.get("fast_val"))),
-        (f"Media mobile ({params['ma_mid']})", _fmt(ma.get("mid_val"))),
-        (f"Media mobile ({params['ma_slow']})", _fmt(ma.get("slow_val"))),
+        (f"Media mobile ({ma['fast_n']})", _fmt(ma.get("fast_val"))),
+        (f"Media mobile ({ma['mid_n']})", _fmt(ma.get("mid_val"))),
+        (f"Media mobile ({ma['slow_n']})", _fmt(ma.get("slow_val"))),
         ("Bollinger — banda superiore", _fmt(boll.get("upper_val"))),
         ("Bollinger — mediana (20)", _fmt(boll.get("mid_val"))),
         ("Bollinger — banda inferiore", _fmt(boll.get("lower_val"))),
         ("Bollinger — %B", _fmt(boll.get("percent_b"))),
-        (f"RSI ({params['rsi_period']})", _fmt(snap.get("rsi"), 1)),
+        ("RSI", _fmt(snap.get("rsi"), 1)),
         ("Stocastico %K", _fmt(stoch.get("k_val"), 1)),
         ("Stocastico %D", _fmt(stoch.get("d_val"), 1)),
         ("MACD", _fmt(macd_res.get("macd_val"), 3)),
@@ -1113,46 +1516,51 @@ def numeric_summary(snap: dict) -> list[tuple[str, str]]:
         ("Istogramma MACD", _fmt(macd_res.get("hist_val"), 3)),
         ("Williams %R", _fmt(snap.get("williams_r"), 1)),
         ("ATR (volatilità media)", _fmt(snap.get("atr"))),
+        ("OBV", _fmt(snap.get("volume", {}).get("obv_val"), 0)),
+        ("Directional Score", _fmt(snap.get("synthesis", {}).get("D"), 2)),
+        ("Agreement Index", _fmt(snap.get("synthesis", {}).get("A"), 2)),
     ]
     for cp in snap.get("chart_patterns", []):
         if cp.get("target") is not None:
-            rows.append((f"Obiettivo di prezzo — {cp['pattern']}", f"{cp['target']:.2f}"))
+            rows.append((f"Obiettivo di prezzo — {cp['pattern']} ({cp['state']})", f"{cp['target']:.2f}"))
     return rows
 
 
 def trade_plan(snap: dict | None) -> dict | None:
-    """Struttura operativa (ingresso/stop/target/rapporto rischio-
-    rendimento) costruita solo su livelli tecnici oggettivi: supporto o
-    resistenza più vicini come riferimento per lo stop, resistenza/
-    supporto o obiettivo di figura più vicino come target, ATR come
-    fallback quando non c'è un livello vicino. È un modello di piano,
-    non un ordine da eseguire: dimensionamento e tolleranza al rischio
-    restano scelte personali."""
+    """Piano operativo (§13): ingresso/stop/target su livelli oggettivi
+    (S/R, ATR, obiettivi di figura). Si rifiuta di produrre un piano
+    quando il quadro non è direzionale (|D| basso o A basso) — la
+    disciplina esplicitamente richiesta dalla specifica, non solo quando
+    lo score puntuale è vicino a zero come prima."""
     if not snap or snap.get("price") is None or not snap.get("atr"):
         return None
 
     price = snap["price"]
     atr_val = snap["atr"]
-    score = technical_score(snap)
-    if score is None or -0.2 <= score <= 0.2:
-        return {"bias": "nessun_setup", "score": score, "atr": atr_val, "price": price}
+    synthesis = snap["synthesis"]
+    D, A = synthesis["D"], synthesis["A"]
+
+    if abs(D) < 0.20 or A < 0.45:
+        return {"bias": "nessun_setup", "D": D, "A": A, "atr": atr_val, "price": price,
+                "reason": synthesis["verdict"]}
 
     sr = snap.get("support_resistance", [])
     supports = sorted((l["level"] for l in sr if l["role"] == "supporto" and l["level"] < price), reverse=True)
     resistances = sorted(l["level"] for l in sr if l["role"] == "resistenza" and l["level"] > price)
     up_targets = sorted(cp["target"] for cp in snap.get("chart_patterns", [])
-                         if cp.get("target") and cp["direction"] == "rialzista" and cp["target"] > price)
+                         if cp.get("target") and cp["direction"] == "rialzista" and cp["target"] > price
+                         and cp.get("state") != "invalidato")
     down_targets = sorted((cp["target"] for cp in snap.get("chart_patterns", [])
-                            if cp.get("target") and cp["direction"] == "ribassista" and cp["target"] < price),
-                           reverse=True)
+                            if cp.get("target") and cp["direction"] == "ribassista" and cp["target"] < price
+                            and cp.get("state") != "invalidato"), reverse=True)
 
-    bias = "long" if score > 0.2 else "short"
+    bias = "long" if D > 0 else "short"
 
     if bias == "long":
-        nearest_support = supports[0] if supports else None
-        if nearest_support is not None and (price - nearest_support) <= 3 * atr_val:
-            stop = nearest_support - 0.5 * atr_val
-            stop_basis = f"leggermente sotto il supporto più vicino ({nearest_support:.2f})"
+        nearest_sup = supports[0] if supports else None
+        if nearest_sup is not None and (price - nearest_sup) <= 3 * atr_val:
+            stop = nearest_sup - 0.5 * atr_val
+            stop_basis = f"leggermente sotto il supporto più vicino ({nearest_sup:.2f})"
         else:
             stop = price - 1.5 * atr_val
             stop_basis = "1,5 volte l'ATR sotto il prezzo attuale (nessun supporto vicino)"
@@ -1162,10 +1570,10 @@ def trade_plan(snap: dict | None) -> dict | None:
         risk = price - stop
         reward = target - price
     else:
-        nearest_resistance = resistances[0] if resistances else None
-        if nearest_resistance is not None and (nearest_resistance - price) <= 3 * atr_val:
-            stop = nearest_resistance + 0.5 * atr_val
-            stop_basis = f"leggermente sopra la resistenza più vicina ({nearest_resistance:.2f})"
+        nearest_res = resistances[0] if resistances else None
+        if nearest_res is not None and (nearest_res - price) <= 3 * atr_val:
+            stop = nearest_res + 0.5 * atr_val
+            stop_basis = f"leggermente sopra la resistenza più vicina ({nearest_res:.2f})"
         else:
             stop = price + 1.5 * atr_val
             stop_basis = "1,5 volte l'ATR sopra il prezzo attuale (nessuna resistenza vicina)"
@@ -1176,25 +1584,25 @@ def trade_plan(snap: dict | None) -> dict | None:
         reward = price - target
 
     rr = (reward / risk) if risk and risk > 0 else None
+    rr_unfavorable = bool(rr is not None and rr < 1.5)
 
     return {
-        "bias": bias, "score": score, "atr": atr_val, "price": price,
+        "bias": bias, "D": D, "A": A, "atr": atr_val, "price": price,
         "entry": price, "stop": round(stop, 4), "target": round(target, 4),
         "stop_basis": stop_basis, "target_basis": target_basis,
         "risk": round(risk, 4) if risk else None, "reward": round(reward, 4) if reward else None,
-        "risk_reward": round(rr, 2) if rr else None,
+        "risk_reward": round(rr, 2) if rr else None, "rr_unfavorable": rr_unfavorable,
     }
 
 
 def multi_horizon_analysis(symbol: str) -> dict:
-    """Analisi sui tre orizzonti temporali in un'unica chiamata — usata
-    dalla pagina dedicata e, in futuro, dal motore di scoring composito."""
+    """Analisi sui tre orizzonti temporali in un'unica chiamata."""
     out = {}
     for h in HORIZONS:
         snap = technical_snapshot(symbol, h)
         out[h] = {
             "snapshot": snap,
-            "score": technical_score(snap),
+            "synthesis": snap.get("synthesis") if snap else None,
             "interpretation": interpret(snap),
         }
     return out

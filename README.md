@@ -20,16 +20,18 @@ attivo.
 - `pages/1_Ribilanciamento.py` — confronta l'allocazione attuale con un target che imposti tu, con importi suggeriti da comprare/vendere
 - `pages/2_Benchmark_e_Performance.py` — confronto con un indice di mercato (rendimento XIRR reale, non approssimato) + quali posizioni hanno contribuito di più al risultato
 - `pages/3_Opportunita_di_Mercato.py` — segnali sui titoli in portafoglio (range 52 settimane, target price analisti, momentum)
-- `pages/4_Analisi_Tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica completa per breve/medio/lungo termine — trend, medie mobili, Bollinger, oscillatori (RSI/Stocastico/MACD/Williams %R), pattern di candlestick e figure di prezzo — divisa per sezioni con una sintesi finale, contestualizzata sul tuo prezzo di carico/riferimento
+- `pages/4_Analisi_Tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
 - `pages/8_Analisi_Fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
+- `pages/9_Fattori.py` — classifica i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con percentile e radar a 5 assi contro un universo di confronto (portafoglio + preferiti + peer di settore), non contro il proprio grafico: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
 - `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
+- `data/factor_cache.json` — stessa logica di cache, file separato, per le metriche grezze usate dalla pagina Fattori (creato al primo utilizzo della pagina Fattori)
 - `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
 - `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
@@ -144,13 +146,18 @@ renderle permanenti:
 - **Analisi Tecnica**: scegli l'orizzonte (breve/medio/lungo termine) in
   base a come usi quel titolo — trading di breve o investimento — e leggi
   il "perché" sotto il grafico prima di decidere.
+- **Fattori**: prima di comprare un titolo forte sui fondamentali, guarda
+  dove si posiziona sui 5 fattori rispetto agli altri titoli che segui —
+  un titolo di qualità ma caro (Value basso) o già corso molto (Momentum
+  alto ma teso in Analisi Tecnica) merita un timing più attento.
 
 ## Analisi Tecnica: come funziona
 
-La pagina **Analisi Tecnica** applica in automatico le tecniche classiche
-del libro di J. Murphy ai dati storici del ticker, organizzata in tre
-sezioni — **Portafoglio**, **Preferiti**, **Cerca** — che condividono lo
-stesso motore di analisi:
+La pagina **Analisi Tecnica** applica il framework di J. Murphy (Dow
+Theory, supporti/resistenze, trendline, oscillatori in contesto, volume,
+candlestick e figure di prezzo) ai dati storici del ticker, organizzata
+in tre sezioni — **Portafoglio**, **Preferiti**, **Cerca** — che
+condividono lo stesso motore (`src/technical.py`):
 
 - **Portafoglio**: elenca automaticamente i titoli che hai già (dal
   Registro Transazioni) — nessuna ricerca necessaria. L'analisi è
@@ -168,47 +175,94 @@ stesso motore di analisi:
 - **Cerca**: ricerca libera per qualsiasi altro titolo, con un pulsante
   rapido per aggiungerlo ai Preferiti.
 
-In ognuna delle tre sezioni, l'analisi riconosce il trend
-(massimi/minimi crescenti o decrescenti), disegna sul grafico supporti,
-resistenze e trendlines calcolati dagli estremi locali, calcola medie
-mobili e bande di Bollinger, i principali oscillatori (RSI 14, Stocastico
-14/3/3, MACD 12/26/9, Williams %R) e segnala i pattern di candlestick e
-le figure di prezzo (doppio massimo/minimo, triangoli) più recenti, con
-l'obiettivo di prezzo calcolato secondo le tecniche di misurazione
-standard (altezza della figura proiettata dal punto di rottura).
+**Trend strutturale, non solo medie mobili**: il trend di fondo è
+riconosciuto dalla sequenza di massimi/minimi locali (swing highs/lows
+individuati con un algoritmo a frattali, scalato per orizzonte: più
+sensibile a breve, più ampio a lungo) secondo la Dow Theory — massimi e
+minimi crescenti (HH/HL) per un uptrend, decrescenti (LH/LL) per un
+downtrend. Questo giudizio strutturale viene poi **riconciliato** in modo
+esplicito con l'allineamento delle medie mobili: se le due letture
+concordano il verdetto è "alta confidenza"; se il prezzo è in un pullback
+temporaneo dentro un trend strutturale intatto, il verdetto lo dice
+esplicitamente ("Rialzista con pullback in corso"), invece di produrre
+output contraddittori tipo "trend ribassista" + "medie rialziste" sullo
+stesso titolo.
+
+**Supporti/resistenze e trendline**: i livelli vengono selezionati per
+numero di tocchi, recency e volume sul livello, e quando si cerca il
+livello "più vicino" il criterio è sempre la distanza dal prezzo attuale
+nella direzione corretta (sotto per il supporto, sopra per la
+resistenza) — non il livello più toccato in assoluto, che può essere
+lontanissimo dal prezzo corrente. Le trendline vengono validate
+geometricamente (tolleranza in ATR, verifica che non vengano attraversate
+dal prezzo, minimo 3 punti di appoggio): una trendline che il prezzo ha
+già superato non viene disegnata come se fosse ancora valida.
+
+**Oscillatori in contesto, non come segnali standalone**: RSI, Stocastico
+(dove previsto per l'orizzonte) e MACD vengono letti insieme al trend di
+fondo — un RSI a 90 dentro un uptrend forte è raccontato come conferma di
+forza del trend, non come segnale di vendita imminente (uno dei bug
+esplicitamente corretti in questa revisione). Le divergenze prezzo/RSI
+vengono rilevate a parte, come segnale distinto.
+
+**Candlestick e figure di prezzo filtrati per affidabilità**: i pattern
+di candele vengono pesati per affidabilità storica e filtrati per
+contesto — due pattern contraddittori sullo stesso giorno (es. una
+evening star ribassista e una piercing line rialzista mostrate entrambe
+come valide) non vengono più presentati con pari peso; il più recente e
+coerente col contesto prevale, con al massimo 3 pattern mostrati. Le
+figure di prezzo (doppio massimo/minimo, triangoli) portano ora uno stato
+esplicito — **in formazione**, **completata** (rottura confermata) o
+**invalidata** — invece di essere segnalate come complete anche prima
+della rottura.
+
+**Volume/OBV**: l'On-Balance Volume conferma o mette in dubbio i
+movimenti di prezzo (divergenze volume/prezzo), secondo il principio di
+Murphy che il volume deve confermare il trend.
 
 Sotto il grafico trovi prima una tabella con **tutti i valori numerici**
-calcolati — supporti, resistenze, valore delle medie mobili, delle bande
-di Bollinger, di RSI/Stocastico/MACD/Williams %R, dell'ATR e degli
-eventuali obiettivi di prezzo delle figure — per chi vuole i dati grezzi
-senza leggere il testo.
+calcolati — supporti, resistenze, medie mobili, bande di Bollinger,
+RSI/Stocastico/MACD, ATR ed eventuali obiettivi di prezzo delle figure —
+poi l'analisi per sezioni (Trend e struttura, Medie mobili e volatilità,
+Momentum e oscillatori, Volume, Pattern grafici e candlestick), ognuna
+con un paragrafo che spiega cosa significa, non solo il numero.
 
-Poi l'analisi vera e propria: non un elenco di indicatori messi in fila,
-ma sezioni separate — Trend e struttura del prezzo, Medie mobili e
-volatilità, Momentum e oscillatori, Pattern grafici e candlestick —
-ognuna con un paragrafo che spiega cosa significa, non solo il numero. In
-fondo trovi una **Sintesi**: un paragrafo che ragiona su quanto le
-sezioni concordano o si contraddicono tra loro (es. trend rialzista ma
-momentum già in ipercomprato) e indica i livelli di prezzo da monitorare.
-Ogni riga è generata da regole esplicite, non da un modello black-box:
-puoi sempre risalire al perché di ogni frase.
+**Sintesi con Directional Score + Agreement Index**: invece di una media
+semplice dei segnali, ogni famiglia di segnali (trend, medie, momentum,
+volume, pattern, candlestick, volatilità) vota con un valore direzionale
+`d` in [-1,+1] e un peso di affidabilità `c`; la sintesi calcola un
+**Directional Score** `D` (la direzione media pesata) e un **Agreement
+Index** `A` (quanto i segnali sono d'accordo *sul segno*, non solo sulla
+media). Questo distingue due situazioni che una media semplice
+confonderebbe: **"Neutro"** (`|D|` piccolo perché i segnali sono
+davvero deboli/laterali, `A` alto) da **"Conflitto tra segnali"** (`|D|`
+piccolo perché segnali forti ma di segno opposto si cancellano a
+vicenda, `A` basso) — nel secondo caso il quadro non è decidibile, e la
+pagina lo dice esplicitamente invece di appiattirlo su "neutro". Sotto la
+sintesi trovi anche i **flag tematici** (badge testuali su condizioni
+particolari: ipercomprato/ipervenduto in trend, rottura recente,
+divergenza attiva, ecc.).
 
-Infine un **Piano operativo**: uno schema di ingresso/stop/target
-pensato per chi usa l'analisi anche per il trading di breve periodo.
-Usa il punteggio tecnico per stabilire un'impostazione (long/short/nessun
-setup), lo stop è ancorato al supporto o resistenza più vicini (con un
-margine dato dall'ATR, la volatilità media recente) o, se non c'è un
-livello vicino, a un multiplo dell'ATR; il target è il livello opposto
-più vicino o l'obiettivo di una figura di prezzo rilevata; viene mostrato
-anche il rapporto rischio/rendimento. È uno schema costruito su regole
-tecniche oggettive, non un ordine pronto da eseguire — il dimensionamento
-della posizione resta una scelta tua.
+**Piano operativo**: uno schema di ingresso/stop/target per chi usa
+l'analisi anche per il trading di breve periodo, costruito sul motore
+D/A — se `|D|` è troppo piccolo o `A` è troppo basso (quadro neutro o in
+conflitto), il piano viene **rifiutato esplicitamente** invece di
+proporre un'operazione senza base. Quando c'è un'impostazione (long/
+short), lo stop è ancorato al supporto/resistenza più vicino (con
+margine ATR) o a un multiplo dell'ATR se non c'è un livello vicino; il
+target è il livello opposto più vicino o l'obiettivo di una figura di
+prezzo rilevata; viene mostrato il rapporto rischio/rendimento, con un
+avviso esplicito se è sfavorevole (sotto 1.5). È uno schema costruito su
+regole tecniche oggettive, non un ordine pronto da eseguire — il
+dimensionamento della posizione resta una scelta tua.
 
 I tre orizzonti temporali (breve/medio/lungo) usano parametri diversi —
-oscillatori più corti e sensibili per il trading di breve, dati
-settimanali per l'investimento di lungo periodo — così puoi cambiare la
-profondità dell'analisi (grafico, sezioni e piano operativo insieme) in
-base al tipo di decisione, senza lasciare la pagina.
+ordine dello swing detector, RSI/Stocastico più corti e sensibili per il
+trading di breve (lo Stocastico non è previsto sul lungo termine, dove i
+dati sono settimanali), medie mobili più lunghe per l'investimento di
+lungo periodo — così puoi cambiare la profondità dell'analisi (grafico,
+sezioni, sintesi e piano operativo insieme) in base al tipo di decisione,
+senza lasciare la pagina.
 
 ## Analisi Fondamentale: come funziona il Fundamental Score
 
@@ -278,6 +332,54 @@ composito come vera formula Excel ricalcolabile), bilancio annuale e
 l'intero peer group usato per i percentili — per verificare o archiviare
 l'analisi fuori dall'app.
 
+## Fattori: come funziona
+
+La pagina **Fattori** classifica i titoli in Portafoglio e Preferiti su
+**5 fattori** con un premio storico documentato in letteratura accademica
+(Fama-French, Novy-Marx, Asness/AQR, Jegadeesh-Titman): **Value**,
+**Momentum**, **Quality**, **Low Volatility**, **Size**. A differenza
+delle altre due pagine di analisi, qui il confronto non è mai col
+passato del titolo stesso, ma con un **universo** di altri titoli
+(portafoglio + preferiti + peer di settore, opzionali): il percentile
+dice "dove sei rispetto agli altri", non "sei a buon mercato in
+assoluto".
+
+- **Value**: earnings yield (E/P), FCF yield, EV/EBIT earnings yield
+  (riusato dal Fundamental Score), book-to-price — quattro angolazioni
+  diverse sulla stessa idea, per non dipendere da un solo multiplo.
+- **Momentum**: total return a 12 mesi **escludendo l'ultimo mese**
+  (12-1) — la convenzione standard in letteratura, perché il mese più
+  recente tende a mostrare un effetto di reversione di breve termine che
+  contaminerebbe il segnale di momentum vero e proprio.
+- **Quality**: collegato direttamente alle metriche core del Fundamental
+  Score — ROIC, gross-profits-to-assets, accruals ratio — cosi' i due
+  moduli restano coerenti tra loro invece di avere due definizioni
+  diverse di "qualità".
+- **Low Volatility**: volatilità storica a 12 mesi e beta — storicamente,
+  i titoli meno volatili non hanno reso peggio di quelli più volatili a
+  parità di rischio atteso, il cosiddetto "low-volatility anomaly".
+- **Size**: capitalizzazione di mercato, con percentile più alto per
+  cap **più piccola** — il premio storico delle small cap, per quanto
+  meno robusto negli ultimi decenni rispetto agli anni '80-'90.
+
+Ogni fattore diventa un **percentile 0-100** (winsorizzato al 5°/95°,
+stesso metodo del Fundamental Score) contro l'universo scelto, poi
+aggregato in un **composite** con un profilo di peso a scelta —
+Equal-weight di default, o un tilt dichiarato verso Value/Momentum/
+Quality. Per ogni titolo trovi un **radar a 5 assi** e le metriche
+grezze in un pannello a parte, per verificare da dove viene ogni
+percentile.
+
+**Distinzione cruciale, ribadita anche nell'interfaccia**: il Momentum-
+fattore qui è **cross-sezionale e di medio termine** (quali titoli
+comprare, confrontando total return a 12-1 mesi tra titoli diversi) — un
+concetto diverso dagli **oscillatori di momentum** dell'Analisi Tecnica
+(RSI, Stocastico, MACD: quando entrare su un singolo titolo, nel breve
+termine). Un titolo forte su Fundamental Score e Fattori ma teso
+sull'Analisi Tecnica (ipercomprato, resistenza vicina) è un caso da
+"aspetta il pullback", non da comprare subito; forte su tutti e tre i
+moduli è un setup più pulito.
+
 ## Sviluppo/test in locale (opzionale)
 
 ```bash
@@ -306,7 +408,16 @@ streamlit run app.py
 - I pattern grafici e le candele in Analisi Tecnica sono rilevati con
   regole geometriche automatiche (non da un occhio umano): possono
   produrre falsi segnali, soprattutto su titoli poco liquidi o mercati
-  laterali. Vanno letti come spunti da verificare, non certezze.
+  laterali. Anche col filtro di affidabilità/contesto, vanno letti come
+  spunti da verificare, non certezze — lo stato "in formazione" di una
+  figura può non completarsi mai.
+- Il Directional Score e l'Agreement Index sono pesi/soglie costruiti
+  per ragionevolezza (coerenti con la logica di `ta_core.py` preso come
+  riferimento), non calibrati con un backtest storico: la soglia
+  "Conflitto tra segnali" (`|D|` piccolo, `A` basso) può classificare
+  come conflitto anche casi limite dove i segnali sono semplicemente
+  entrambi deboli di segno opposto — un giudizio tecnicamente corretto
+  ma da leggere col buon senso, non come oracolo.
 - Gli avvisi sui Preferiti sono solo in-app: nessuna email/notifica push in
   questa versione. Vanno controllati aprendo la pagina e premendo
   "Scansiona preferiti" — non è un servizio che gira in background.
@@ -314,9 +425,10 @@ streamlit run app.py
   standard di volatilità non presente nei capitoli del manuale di Murphy
   usati per il resto del modulo — è stato aggiunto perché necessario per
   calibrare stop e target in modo proporzionato alla volatilità reale del
-  titolo. Stop e target sono un punto di partenza tecnico, non tengono
-  conto di commissioni, slippage, orari di mercato o della tua gestione
-  del rischio complessiva.
+  titolo. Viene rifiutato esplicitamente se il quadro D/A non lo
+  giustifica, ma quando è mostrato resta un punto di partenza tecnico:
+  non tiene conto di commissioni, slippage, orari di mercato o della tua
+  gestione del rischio complessiva.
 - Il **Fundamental Score** è un ranking **relativo** al peer group di
   settore: in un settore uniformemente debole, uno score alto significa
   "il migliore di un gruppo scarso", non un titolo oggettivamente solido
@@ -359,3 +471,12 @@ streamlit run app.py
   un modello linguistico: può classificare male titoli ambigui o ironici
   ed è pensato come primo orientamento, da verificare leggendo gli
   articoli.
+- I **Fattori** sono premi statistici di lungo periodo, non garanzie:
+  possono sottoperformare per anni interi (il value 2010-2020 è
+  l'esempio classico) — un percentile alto oggi non è una promessa di
+  rendimento futuro. Il percentile dipende sempre dall'universo di
+  confronto scelto: con pochi titoli in Portafoglio/Preferiti e i peer
+  di settore disattivati, l'universo può essere troppo piccolo per un
+  percentile robusto. Il composite ridistribuisce i pesi sui fattori
+  disponibili se qualcuno manca per dati insufficienti, invece di
+  imputare un valore neutro.

@@ -1,11 +1,12 @@
-"""Analisi Tecnica: hub decisionale sui singoli titoli. Tre sezioni —
-Portafoglio (i titoli che hai già, senza doverli ricercare), Preferiti
-(una watchlist con segnali automatici) e Cerca (ricerca libera) — tutte
-appoggiate sullo stesso motore di analisi tecnica (src/technical.py):
-trend, medie mobili/volatilità, momentum e pattern trattati come sezioni
-separate di un vero report, con una sintesi finale che ragiona su quanto
-concordano o si contraddicono tra loro, contestualizzata rispetto al
-prezzo di carico o di riferimento."""
+"""Analisi Tecnica: hub decisionale sui singoli titoli, ricostruito
+secondo Specifica_Analisi_Tecnica_Murphy.md. Tre sezioni — Portafoglio,
+Preferiti e Cerca — tutte appoggiate sullo stesso motore (src/technical.py):
+trend strutturale (Dow) riconciliato con l'allineamento delle medie,
+oscillatori letti nel contesto del trend, volume/OBV, pattern grafici e
+candlestick filtrati per affidabilità, e un motore di sintesi a due
+numeri distinti — Directional Score e Agreement Index — che separa
+esplicitamente "neutro per assenza di direzione" da "conflitto tra
+segnali", invece di appiattire tutto in un unico punteggio ambiguo."""
 import datetime as dt
 import os
 
@@ -32,21 +33,27 @@ if not check_password():
 st.title("\U0001F4C8 Analisi Tecnica")
 st.caption(
     "Portafoglio e Preferiti sono già pronti da analizzare, senza doverli ricercare — usa Cerca "
-    "per qualsiasi altro titolo. L'analisi è divisa per famiglia di indicatori, con una sintesi "
-    "finale che ragiona su quanto concordano tra loro."
+    "per qualsiasi altro titolo. Il motore riconcilia trend strutturale e medie mobili prima di dare "
+    "un verdetto, e la sintesi finale mostra due numeri distinti — Directional Score e Agreement "
+    "Index — invece di un unico punteggio che confonde 'senza direzione' con 'segnali in conflitto'."
 )
 
 PORTFOLIO_PATH = "data/portfolio.csv"
 WATCHLIST_PATH = "data/watchlist.csv"
 
-TREND_KIND = {"rialzista": "ok", "ribassista": "bad", "laterale": "warn", "indeterminato": "info"}
 HORIZON_LABEL_TO_KEY = {v["label"]: k for k, v in tech.HORIZONS.items()}
 
 
-def _score_badge_kind(score):
-    if score is None:
+def _verdict_badge_kind(verdict: str) -> str:
+    if verdict.startswith("Rialzista"):
+        return "ok"
+    if verdict.startswith("Ribassista"):
+        return "bad"
+    if "Conflitto" in verdict:
+        return "bad"
+    if "Neutro" in verdict:
         return "info"
-    return "ok" if score > 0.15 else ("bad" if score < -0.15 else "warn")
+    return "warn"  # "Direzione debole e contrastata: cautela"
 
 
 def _push_watchlist():
@@ -59,9 +66,10 @@ def _push_watchlist():
 def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | None = None,
                             entry_label: str = "prezzo di riferimento", default_horizon: str = "medio"):
     """Blocco completo per un ticker: intestazione, orizzonte temporale,
-    grafico+oscillatori, contesto sul prezzo di ingresso (se fornito) e
-    analisi sezionata con sintesi finale. Riutilizzato identico dalle tre
-    sezioni della pagina."""
+    Directional Score + Agreement Index, grafico+oscillatori+volume,
+    contesto sul prezzo di ingresso (se fornito), analisi sezionata con
+    flag tematici e sintesi finale, piano operativo. Riutilizzato
+    identico dalle tre sezioni della pagina."""
     info = dp.get_info(symbol)
     st.subheader(f"{info.get('name', symbol)} ({symbol})")
 
@@ -86,15 +94,16 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         st.warning("Dati storici insufficienti per questo ticker/orizzonte. Prova un altro orizzonte.")
         return
 
-    score = tech.technical_score(snap)
-    d1, d2, d3, d4 = st.columns(4)
-    d1.markdown(f"**Trend**<br>{badge(snap['trend'].capitalize(), TREND_KIND.get(snap['trend'], 'info'))}",
+    synthesis = snap["synthesis"]
+    d1, d2, d3 = st.columns([1, 1, 2])
+    d1.metric("Directional Score", f"{synthesis['D']:+.2f}")
+    d1.caption("-1 fortemente ribassista … +1 fortemente rialzista")
+    d2.metric("Agreement Index", f"{synthesis['A']:.2f}")
+    d2.caption("0 = famiglie in conflitto, 1 = pienamente allineate")
+    d3.markdown(f"**Verdetto**<br>{badge(synthesis['verdict'], _verdict_badge_kind(synthesis['verdict']))}",
                 unsafe_allow_html=True)
-    d2.markdown(f"**Punteggio tecnico**<br>{badge(f'{score:+.2f}' if score is not None else 'n/d', _score_badge_kind(score))}",
-                unsafe_allow_html=True)
-    d3.metric("RSI", f"{snap['rsi']:.1f}" if snap["rsi"] is not None else "n/d", snap.get("rsi_signal") or "")
-    macd_val = snap["macd"].get("hist_val")
-    d4.metric("MACD (istogramma)", f"{macd_val:+.3f}" if macd_val is not None else "n/d")
+    d3.caption(f"{synthesis['n_families']} famiglie di indicatori considerate (Trend, Medie, Momentum, "
+               f"Volume, Pattern, Candlestick, Volatilità).")
 
     if entry_price:
         ctx = tech.entry_context(snap, entry_price)
@@ -132,6 +141,16 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
                     unsafe_allow_html=True,
                 )
                 st.write(sec["text"])
+
+        if snap.get("thematic_flags"):
+            st.markdown("#### \U0001F3F7️ Flag tematici")
+            st.caption(
+                "Segnali che raccontano la stessa storia, raggruppati in un unico tema invece di "
+                "disperdersi in più 'neutri' separati."
+            )
+            for flag in snap["thematic_flags"]:
+                st.markdown(f"- {flag}")
+
         st.markdown("#### \U0001F9ED Sintesi")
         st.info(narrative["synthesis"])
     else:
@@ -140,15 +159,17 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
     st.markdown("### \U0001F3AF Piano operativo")
     st.caption(
         "Uno schema di ingresso/stop/target costruito solo su livelli tecnici oggettivi (supporti, "
-        "resistenze, ATR, obiettivi di figura) — un modello da adattare, non un ordine pronto. "
-        "Dimensionamento della posizione e tolleranza al rischio restano scelte tue."
+        "resistenze, ATR, obiettivi di figura) — un modello da adattare, non un ordine pronto. Se il "
+        "quadro non è direzionale (Directional Score o Agreement Index bassi) l'app si rifiuta di "
+        "proporne uno, invece di forzare un piano su un quadro indecidibile."
     )
     plan = tech.trade_plan(snap)
     if not plan or plan["bias"] == "nessun_setup":
+        motivo = plan.get("reason") if plan else None
         st.info(
-            "Il quadro tecnico attuale non è abbastanza direzionale da costruire un piano operativo "
-            "(punteggio tecnico vicino allo zero): aspettare un'impostazione più chiara è spesso la "
-            "scelta più prudente."
+            "Il quadro tecnico attuale non è abbastanza direzionale o concorde per costruire un piano "
+            "operativo" + (f" ({motivo})." if motivo else ".") +
+            " Aspettare un'impostazione più chiara è spesso la scelta più prudente."
         )
     else:
         bias_kind = "ok" if plan["bias"] == "long" else "bad"
@@ -158,10 +179,11 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         p3.metric("Stop", f"{plan['stop']:,.2f}", f"{plan['stop'] - plan['entry']:+.2f}")
         p4.metric("Target", f"{plan['target']:,.2f}", f"{plan['target'] - plan['entry']:+.2f}")
         rr = plan.get("risk_reward")
-        rr_kind = "ok" if rr and rr >= 2 else ("warn" if rr and rr >= 1 else "bad")
+        rr_kind = "bad" if plan.get("rr_unfavorable") else ("ok" if rr and rr >= 2 else "warn")
         st.markdown(
             f"Rapporto rischio/rendimento: {badge(f'{rr:.2f}' if rr else 'n/d', rr_kind)} "
-            f"(rischio {plan['risk']:.2f}, rendimento potenziale {plan['reward']:.2f})",
+            f"(rischio {plan['risk']:.2f}, rendimento potenziale {plan['reward']:.2f})"
+            + (" — sotto 1:1,5, segnalato come sfavorevole." if plan.get("rr_unfavorable") else ""),
             unsafe_allow_html=True,
         )
         st.caption(f"Stop basato su: {plan['stop_basis']}. Target basato su: {plan['target_basis']}.")
@@ -284,6 +306,10 @@ with tab_search:
 
 disclaimer(
     "L'analisi tecnica descrive schemi statistici passati nei prezzi, non previsioni certe. Il "
-    "contesto sul prezzo di ingresso è puramente descrittivo — non è consulenza finanziaria "
-    "personalizzata né un'indicazione operativa. Le decisioni restano tue."
+    "Directional Score e l'Agreement Index sono una lettura quantitativa delle famiglie di indicatori "
+    "considerate, non un segnale operativo validato da un backtest. Gli oscillatori danno falsi segnali "
+    "nei trend forti, i pattern grafici falliscono, le candele su base giornaliera sono rumorose: da qui "
+    "la disciplina della concordanza tra famiglie. Il contesto sul prezzo di ingresso è puramente "
+    "descrittivo — non è consulenza finanziaria personalizzata né un'indicazione operativa. Le decisioni "
+    "restano tue."
 )
