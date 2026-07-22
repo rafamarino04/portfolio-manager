@@ -53,13 +53,25 @@ _INTEREST_EXPENSE_LABELS = [
 _PRETAX_INCOME_LABELS = ["Pretax Income"]
 _TAX_PROVISION_LABELS = ["Tax Provision"]
 _DILUTED_SHARES_LABELS = ["Diluted Average Shares", "Basic Average Shares"]
+_TOTAL_ASSETS_LABELS = ["Total Assets"]
+_RETAINED_EARNINGS_LABELS = ["Retained Earnings"]
+_LONG_TERM_DEBT_LABELS = ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"]
+_BUYBACK_LABELS = ["Repurchase Of Capital Stock", "Common Stock Payments"]
+_ISSUANCE_LABELS = ["Issuance Of Capital Stock", "Common Stock Issuance"]
+_DIVIDENDS_PAID_LABELS = ["Cash Dividends Paid", "Common Stock Dividend Paid"]
 
+# Metriche usate dal Fundamental Score (Piotroski, Altman, ROIC, ecc. — vedi
+# src/fundamental_score.py): estendono lo storico di bilancio di base con le
+# voci richieste dalla specifica che non servivano alla vecchia analisi
+# narrativa (patrimonio/attivo totale, debito a lungo termine separato dal
+# debito totale, utili non distribuiti, buyback/emissioni nette).
 METRIC_KEYS = [
     "revenue", "net_income", "gross_profit", "operating_income", "ebitda",
     "depreciation_amortization", "operating_cash_flow", "capex", "free_cash_flow",
     "total_debt", "cash", "total_equity", "eps", "current_assets",
     "current_liabilities", "interest_expense", "pretax_income", "tax_provision",
-    "diluted_shares",
+    "diluted_shares", "total_assets", "retained_earnings", "long_term_debt",
+    "buyback", "stock_issuance", "dividends_paid",
 ]
 
 CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "CHF": "CHF ", "JPY": "¥"}
@@ -171,6 +183,12 @@ def get_financial_history(symbol: str, freq: str = "annual") -> dict:
         out["eps"] = _clean(_find_row(income, _EPS_LABELS))
         out["current_assets"] = _clean(_find_row(balance, _CURRENT_ASSETS_LABELS))
         out["current_liabilities"] = _clean(_find_row(balance, _CURRENT_LIABILITIES_LABELS))
+        out["total_assets"] = _clean(_find_row(balance, _TOTAL_ASSETS_LABELS))
+        out["retained_earnings"] = _clean(_find_row(balance, _RETAINED_EARNINGS_LABELS))
+        out["long_term_debt"] = _clean(_find_row(balance, _LONG_TERM_DEBT_LABELS))
+        out["buyback"] = _clean(_find_row(cash, _BUYBACK_LABELS))
+        out["stock_issuance"] = _clean(_find_row(cash, _ISSUANCE_LABELS))
+        out["dividends_paid"] = _clean(_find_row(cash, _DIVIDENDS_PAID_LABELS))
     except Exception:
         pass
     return out

@@ -1,14 +1,16 @@
 """
-Export in Excel dell'analisi fondamentale: le stesse tabelle mostrate in
-pagina, ma scaricabili e riutilizzabili fuori dall'app (per chi vuole
-tenere traccia delle proprie analisi, incollarle in un modello più ampio,
-o semplicemente rivederle offline).
+Export in Excel del Fundamental Score (src/fundamental_score.py): le
+stesse informazioni mostrate in pagina — le 8 metriche core + crescita,
+i sub-score di categoria, i badge Piotroski/Altman, il peer group usato
+per i percentili — ma scaricabili e riutilizzabili fuori dall'app.
 
-I dati grezzi (ricavi, utile, debito, ecc.) sono valori storici presi da
-Yahoo Finance: sono un input, non un calcolo, e vengono scritti come tali
-(testo blu, per convenzione). I margini/ratio derivati sotto sono invece
-vere formule Excel che leggono quei valori — così restano ricalcolabili
-e verificabili anche fuori dall'app, non numeri congelati.
+Convenzione (invariata dalle versioni precedenti di questo modulo): i
+valori calcolati dal motore Python (metriche derivate, percentili,
+sub-score) sono scritti come dati storici/di input (testo blu), perché
+non sono ricavabili da una semplice formula tra celle adiacenti nel
+foglio; il punteggio composito totale nel foglio "Categorie e pesi" resta
+invece una vera formula Excel (somma pesata di sub-score e Piotroski),
+cosi' è ricalcolabile se si modifica un peso o un sub-score a mano.
 """
 from __future__ import annotations
 
@@ -17,6 +19,9 @@ import io
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+
+from src import financials as finmod
+from src import fundamental_score as fscore
 
 NAVY = "1B2A4A"
 GOLD = "C9A227"
@@ -31,10 +36,25 @@ FONT_NAME = "Arial"
 
 _RAW_ROWS = [
     ("revenue", "Ricavi"), ("ebitda", "EBITDA"), ("gross_profit", "Utile lordo"),
-    ("operating_income", "Utile operativo"), ("net_income", "Utile netto"),
+    ("operating_income", "Utile operativo (EBIT)"), ("net_income", "Utile netto"),
     ("free_cash_flow", "Free cash flow"), ("total_debt", "Debito totale"),
-    ("cash", "Cassa"), ("total_equity", "Patrimonio netto"), ("eps", "EPS"),
+    ("cash", "Cassa"), ("total_equity", "Patrimonio netto"), ("total_assets", "Attivo totale"),
+    ("retained_earnings", "Utili non distribuiti"), ("eps", "EPS"),
 ]
+
+_METRIC_UNIT = {
+    "roic": "pct", "gross_profits_to_assets": "pct", "fcf_conversion": "pct",
+    "accruals_ratio": "pct", "net_debt_to_ebitda": "ratio", "interest_coverage": "ratio",
+    "ev_ebit_yield": "pct", "shareholder_yield": "pct", "revenue_cagr": "pct",
+    "eps_cagr": "pct", "growth_volatility": "pct",
+}
+_METRIC_LABELS_IT = {
+    "roic": "ROIC", "gross_profits_to_assets": "Gross profit / Attivo",
+    "fcf_conversion": "FCF conversion (FCF/Utile netto)", "accruals_ratio": "Accruals ratio (Sloan)",
+    "net_debt_to_ebitda": "Debito netto / EBITDA", "interest_coverage": "Copertura interessi (EBIT/int.)",
+    "ev_ebit_yield": "EV/EBIT earnings yield", "shareholder_yield": "Shareholder yield",
+    "revenue_cagr": "CAGR ricavi", "eps_cagr": "CAGR EPS", "growth_volatility": "Volatilità crescita ricavi",
+}
 
 
 def _header_font():
@@ -70,6 +90,235 @@ def _autosize(ws, widths: dict):
         ws.column_dimensions[col].width = width
 
 
+def _band_color(band: str) -> str:
+    return {"Eccellente": GREEN, "Solido": GREEN, "Nella media": GOLD, "Debole": RED, "Scarso": RED}.get(band, GRAY)
+
+
+# ---------------------------------------------------------------------------
+# Foglio 1 — Sintesi
+# ---------------------------------------------------------------------------
+
+def _write_summary_sheet(ws, symbol: str, info: dict, price, result: dict):
+    ws.cell(row=1, column=1, value=f"Fundamental Score — {info.get('name', symbol)} ({symbol})").font = _title_font(16)
+    ws.cell(row=2, column=1, value=(
+        "Portfolio Manager · dati Yahoo Finance (yfinance) · screening comparativo su peer group di "
+        "settore, non un fair value · solo a scopo informativo, non consulenza finanziaria"
+    )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
+
+    row = 4
+    currency = info.get("currency")
+    facts = [
+        ("Prezzo", price, "$#,##0.00;($#,##0.00);-"),
+        ("Settore", info.get("sector"), None),
+        ("Profilo di peso", result.get("weight_profile"), None),
+        ("Cap bucket", result.get("cap_bucket"), None),
+        ("Numero peer di confronto", result.get("n_peers"), None),
+        ("Capitalizzazione", info.get("market_cap"), "$#,##0,,\"M\""),
+        ("Valuta", currency, None),
+    ]
+    for label, val, fmt in facts:
+        ws.cell(row=row, column=1, value=label).font = _label_font(bold=True)
+        cell = ws.cell(row=row, column=2, value=val)
+        cell.font = _input_font()
+        if fmt:
+            cell.number_format = fmt
+        row += 1
+
+    row += 1
+    composite = result["composite"]
+    ws.cell(row=row, column=1, value="Fundamental Score composito").font = _title_font(12)
+    row += 1
+    ws.cell(row=row, column=1, value="Punteggio (0-100)").font = _label_font()
+    score = composite.get("score")
+    cell = ws.cell(row=row, column=2, value=score)
+    cell.font = Font(name=FONT_NAME, bold=True, color=_band_color(composite.get("band", "n/d")))
+    cell.number_format = "0"
+    row += 1
+    ws.cell(row=row, column=1, value="Banda").font = _label_font()
+    band_cell = ws.cell(row=row, column=2, value=composite.get("band", "n/d"))
+    band_cell.font = Font(name=FONT_NAME, bold=True, color=_band_color(composite.get("band", "n/d")))
+    row += 1
+    if composite.get("insufficient_data"):
+        ws.cell(row=row, column=1, value=composite.get("reason", "Copertura dati insufficiente.")).font = Font(
+            name=FONT_NAME, italic=True, size=9, color=RED
+        )
+        row += 1
+    if composite.get("altman_capped"):
+        ws.cell(row=row, column=1, value="Punteggio limitato a 40 per zona di distress secondo Altman Z.").font = Font(
+            name=FONT_NAME, italic=True, size=9, color=RED
+        )
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value="Badge").font = _title_font(11)
+    row += 1
+    piotroski = result["piotroski"]
+    ws.cell(row=row, column=1, value="Piotroski F-Score (0-9)").font = _label_font()
+    p_cell = ws.cell(row=row, column=2, value=piotroski.get("score"))
+    p_cell.font = _input_font()
+    row += 1
+    altman = result["altman"]
+    ws.cell(row=row, column=1, value=f"Altman {altman.get('variant') or 'Z'}").font = _label_font()
+    a_cell = ws.cell(row=row, column=2, value=altman.get("z"))
+    a_cell.font = _input_font()
+    a_cell.number_format = "0.00"
+    row += 1
+    ws.cell(row=row, column=1, value="Zona Altman").font = _label_font()
+    zone_it = {"safe": "Sicura", "grey": "Grigia", "distress": "Distress"}.get(altman.get("zone"), "n/d")
+    z_cell = ws.cell(row=row, column=2, value=zone_it)
+    z_cell.font = Font(name=FONT_NAME, bold=True, color={"Sicura": GREEN, "Grigia": GOLD, "Distress": RED}.get(zone_it, GRAY))
+    row += 2
+
+    ws.cell(row=row, column=1, value="Tesi in una riga").font = _title_font(11)
+    row += 1
+    ws.cell(row=row, column=1, value=fscore.build_thesis_text(result, info))
+    ws.cell(row=row, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row + 2, end_column=6)
+    ws.row_dimensions[row].height = 50
+    row += 4
+
+    bulls, bears = fscore.build_bull_bear(result)
+    ws.cell(row=row, column=1, value="Punti di forza").font = Font(name=FONT_NAME, bold=True, color=GREEN)
+    row += 1
+    if bulls:
+        for b in bulls:
+            ws.cell(row=row, column=1, value=f"+ {b}")
+            row += 1
+    else:
+        ws.cell(row=row, column=1, value="Nessun punto di forza netto rispetto al peer group.").font = Font(
+            name=FONT_NAME, italic=True, size=9, color=GRAY
+        )
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value="Punti di attenzione").font = Font(name=FONT_NAME, bold=True, color=RED)
+    row += 1
+    if bears:
+        for b in bears:
+            ws.cell(row=row, column=1, value=f"- {b}")
+            row += 1
+    else:
+        ws.cell(row=row, column=1, value="Nessun segnale di attenzione rilevato.").font = Font(
+            name=FONT_NAME, italic=True, size=9, color=GRAY
+        )
+        row += 1
+
+    _autosize(ws, {"A": 46, "B": 18, "C": 14, "D": 14, "E": 14, "F": 14})
+
+
+# ---------------------------------------------------------------------------
+# Foglio 2 — Metriche core (le 8 + crescita, con percentile settoriale)
+# ---------------------------------------------------------------------------
+
+def _write_metrics_sheet(ws, symbol: str, result: dict):
+    ws.cell(row=1, column=1, value=f"Metriche core del Fundamental Score — {symbol}").font = _title_font(14)
+    ws.cell(row=2, column=1, value=(
+        "Percentile rispetto al peer group di settore (winsorizzato al 5°/95°), orientato cosi' che "
+        "un valore più alto sia sempre 'meglio' — non una soglia assoluta."
+    )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
+
+    header_row = 4
+    for j, h in enumerate(["Metrica", "Valore", "Percentile settoriale"]):
+        ws.cell(row=header_row, column=1 + j, value=h)
+    _style_header_row(ws, header_row, 3)
+
+    metrics = result.get("metrics", {})
+    percentiles = result.get("metric_percentiles", {})
+    row = header_row + 1
+    for key, label in _METRIC_LABELS_IT.items():
+        ws.cell(row=row, column=1, value=label).font = _label_font()
+        val_cell = ws.cell(row=row, column=2, value=metrics.get(key))
+        val_cell.font = _input_font()
+        val_cell.number_format = "0.00%" if _METRIC_UNIT.get(key) == "pct" else "0.00\"x\""
+        # i valori "pct" qui sono già in scala 0-100 (es. 12.3 = 12.3%): usare
+        # un formato percentuale diretto richiederebbe /100, quindi si usa
+        # un formato numerico con simbolo % applicato al numero cosi' com'è
+        if _METRIC_UNIT.get(key) == "pct":
+            val_cell.number_format = '0.00"%"'
+        pct_cell = ws.cell(row=row, column=3, value=percentiles.get(key))
+        pct_cell.font = _input_font()
+        pct_cell.number_format = '0"° percentile"'
+        row += 1
+
+    ws.cell(row=row + 1, column=1, value=(
+        "Fonte: calcolato da src/fundamental_score.py sui bilanci storici (Yahoo Finance) e sul peer "
+        "group curato per settore (src/sector_universe.py)."
+    )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
+
+    _autosize(ws, {"A": 38, "B": 14, "C": 20})
+
+
+# ---------------------------------------------------------------------------
+# Foglio 3 — Categorie e pesi (composito ricalcolabile)
+# ---------------------------------------------------------------------------
+
+def _write_categories_sheet(ws, symbol: str, result: dict):
+    ws.cell(row=1, column=1, value=f"Categorie, pesi e punteggio composito — {symbol}").font = _title_font(14)
+
+    header_row = 3
+    for j, h in enumerate(["Categoria", "Sub-score (0-100)", "Peso nel composito (%)"]):
+        ws.cell(row=header_row, column=1 + j, value=h)
+    _style_header_row(ws, header_row, 3)
+
+    subscores = result.get("subscores", {})
+    weights_used = result.get("composite", {}).get("category_weights_used", {})
+    row = header_row + 1
+    first_cat_row = row
+    for cat in fscore.CATEGORIES:
+        ws.cell(row=row, column=1, value=fscore.CATEGORY_LABELS_IT[cat]).font = _label_font()
+        s_cell = ws.cell(row=row, column=2, value=subscores.get(cat))
+        s_cell.font = _input_font()
+        s_cell.number_format = "0.0"
+        w_cell = ws.cell(row=row, column=3, value=weights_used.get(cat))
+        w_cell.font = _input_font()
+        w_cell.number_format = "0.0"
+        row += 1
+    last_cat_row = row - 1
+
+    piotroski = result.get("piotroski", {})
+    piotroski_weight = result.get("composite", {}).get("piotroski_weight_used")
+    ws.cell(row=row, column=1, value="Piotroski F-Score (scalato 0-100)").font = _label_font()
+    piotroski_scaled = (piotroski["score"] / 9 * 100) if piotroski.get("score") is not None else None
+    p_cell = ws.cell(row=row, column=2, value=piotroski_scaled)
+    p_cell.font = _input_font()
+    p_cell.number_format = "0.0"
+    pw_cell = ws.cell(row=row, column=3, value=piotroski_weight)
+    pw_cell.font = _input_font()
+    pw_cell.number_format = "0.0"
+    piotroski_row = row
+    row += 2
+
+    ws.cell(row=row, column=1, value="Punteggio composito (formula ricalcolabile)").font = _label_font(bold=True)
+    total_cell = ws.cell(
+        row=row, column=2,
+        value=f"=IFERROR(SUMPRODUCT(B{first_cat_row}:B{last_cat_row},C{first_cat_row}:C{last_cat_row})/100"
+              f"+IF(B{piotroski_row}=\"\",0,B{piotroski_row}*C{piotroski_row}/100),\"n/d\")",
+    )
+    total_cell.font = Font(name=FONT_NAME, bold=True, color=NAVY)
+    total_cell.number_format = "0.0"
+    row += 1
+    if result.get("composite", {}).get("altman_capped"):
+        ws.cell(row=row, column=1, value=(
+            "Nota: il punteggio mostrato in pagina è limitato a 40 per zona di distress Altman Z — la "
+            "formula sopra ricalcola il composito 'grezzo' pre-override, utile per capire quanto la "
+            "qualità operativa sarebbe alta se non fosse per il rischio di solvibilità."
+        )).font = Font(name=FONT_NAME, italic=True, size=9, color=RED)
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value=(
+        "I pesi di categoria sono già cap/settore-adjusted e ridistribuiti sulle categorie disponibili "
+        "in caso di dati mancanti (specifica §6-7): modificarli manualmente sopra rompe questa coerenza "
+        "— utile solo per simulazioni 'what-if'."
+    )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
+
+    _autosize(ws, {"A": 44, "B": 18, "C": 20})
+
+
+# ---------------------------------------------------------------------------
+# Foglio 4 — Bilancio annuale (dati grezzi + margini calcolati)
+# ---------------------------------------------------------------------------
+
 def _period_labels(hist: dict) -> list[str]:
     for key, _ in _RAW_ROWS:
         s = hist.get(key)
@@ -78,10 +327,7 @@ def _period_labels(hist: dict) -> list[str]:
     return []
 
 
-def _write_raw_table(ws, start_row: int, hist: dict, title: str) -> tuple[int, dict]:
-    """Scrive una tabella di dati grezzi (periodi in colonna) e ritorna la
-    riga di fine tabella + una mappa {chiave_metrica: numero_riga} utile
-    per costruire poi le formule dei margini."""
+def _write_raw_table(ws, start_row: int, hist: dict, title: str) -> int:
     labels = _period_labels(hist)
     ws.cell(row=start_row, column=1, value=title).font = _title_font(12)
     header_row = start_row + 1
@@ -96,18 +342,14 @@ def _write_raw_table(ws, start_row: int, hist: dict, title: str) -> tuple[int, d
         s = hist.get(key)
         ws.cell(row=r, column=1, value=label).font = _label_font()
         if s is not None:
-            aligned = s.reindex(s.index)  # already sorted
-            for j, lbl in enumerate(labels):
-                val = None
-                if j < len(s):
-                    val = float(s.iloc[j])
+            for j in range(len(labels)):
+                val = float(s.iloc[j]) if j < len(s) else None
                 cell = ws.cell(row=r, column=2 + j, value=val)
                 cell.font = _input_font()
                 cell.number_format = "$#,##0;($#,##0);-" if key != "eps" else "$#,##0.00;($#,##0.00);-"
         row_map[key] = r
         r += 1
 
-    # Margini derivati come formule (dividono le righe di input sopra)
     margin_defs = [
         ("gross_profit", "Margine lordo %"), ("operating_income", "Margine operativo %"),
         ("ebitda", "Margine EBITDA %"), ("net_income", "Margine netto %"),
@@ -125,237 +367,83 @@ def _write_raw_table(ws, start_row: int, hist: dict, title: str) -> tuple[int, d
             cell.number_format = "0.0%"
         r += 1
 
-    ws.cell(row=r, column=1, value="Fonte: Yahoo Finance (yfinance), prospetti contabili storici. "
-                                    "Le voci sopra sono dati storici (input); i margini % sotto sono formule.").font = Font(
-        name=FONT_NAME, italic=True, size=9, color=GRAY
-    )
-    return r + 2, row_map
-
-
-def _write_ratio_sheet(ws, symbol: str, sections: dict, breakdown: dict, currency: str | None):
-    ws.cell(row=1, column=1, value=f"Ratio e punteggio fondamentale — {symbol}").font = _title_font(14)
-
-    row = 3
-    ws.cell(row=row, column=1, value="Sostenibilità: rendimento sul capitale e costo del capitale").font = _title_font(11)
-    row += 1
-    sus = sections.get("sustainability", {})
-    pairs = [
-        ("ROIC (%)", sus.get("roic")),
-        ("WACC (%)", sus.get("wacc")),
-        ("Spread ROIC - WACC (p.p.)",
-         (sus.get("roic") - sus.get("wacc")) if sus.get("roic") is not None and sus.get("wacc") is not None else None),
-    ]
-    for label, val in pairs:
-        ws.cell(row=row, column=1, value=label).font = _label_font()
-        cell = ws.cell(row=row, column=2, value=val)
-        cell.font = _input_font()
-        cell.number_format = "0.0"
-        row += 1
-
-    row += 1
-    ws.cell(row=row, column=1, value="Sostenibilità: qualità degli utili").font = _title_font(11)
-    row += 1
-    quality = sus.get("quality", {}) or {}
-    ratio_pairs = [
-        ("FCF medio / Utile netto medio (%)", quality.get("avg_ratio")),
-    ]
-    for label, val in ratio_pairs:
-        ws.cell(row=row, column=1, value=label).font = _label_font()
-        cell = ws.cell(row=row, column=2, value=val)
-        cell.font = _input_font()
-        cell.number_format = "0.00"
-        row += 1
-
-    row += 1
-    ws.cell(row=row, column=1, value="Punteggio per domanda (scala -1 / +1)").font = _title_font(11)
-    row += 1
-    header_row = row
-    for j, h in enumerate(["Domanda", "Punteggio", "Peso"]):
-        ws.cell(row=header_row, column=1 + j, value=h)
-    _style_header_row(ws, header_row, 3)
-    row += 1
-    axis_labels = {
-        "profitability": "È profittevole?", "sustainability": "È sostenibile nel tempo?",
-        "outlook": "Ha buone prospettive?",
-    }
-    first_score_row = row
-    sub_scores = breakdown.get("sub_scores", {})
-    weights_used = breakdown.get("weights_used", {})
-    for key, label in axis_labels.items():
-        ws.cell(row=row, column=1, value=label).font = _label_font()
-        s_cell = ws.cell(row=row, column=2, value=sub_scores.get(key))
-        s_cell.font = _input_font()
-        s_cell.number_format = "0.00"
-        w_cell = ws.cell(row=row, column=3, value=weights_used.get(key))
-        w_cell.font = _input_font()
-        w_cell.number_format = "0.0%"
-        row += 1
-    last_score_row = row - 1
-
-    row += 1
-    ws.cell(row=row, column=1, value="Punteggio composito totale").font = _label_font(bold=True)
-    total_cell = ws.cell(
-        row=row, column=2,
-        value=f"=IFERROR(SUMPRODUCT(B{first_score_row}:B{last_score_row},C{first_score_row}:C{last_score_row})"
-              f"/SUM(C{first_score_row}:C{last_score_row}),\"n/d\")",
-    )
-    total_cell.font = Font(name=FONT_NAME, bold=True, color=NAVY)
-    total_cell.number_format = "0.00"
-    row += 2
-    ws.cell(row=row, column=1, value=(
-        "Nota: i punteggi per domanda derivano dal modello di analisi dell'app (regole esplicite "
-        "applicate a dati di bilancio/mercato reali, nessuna formula di fair value inventata), non da "
-        "una formula Excel — il totale sopra è invece una vera media pesata, ricalcolabile se si "
-        "modificano punteggio o peso di una domanda. È una lettura secondaria, non un rating."
+    ws.cell(row=r, column=1, value=(
+        "Fonte: Yahoo Finance (yfinance), prospetti contabili annuali. Le voci sopra sono dati storici "
+        "(input, testo blu); i margini % sotto sono formule (testo nero)."
     )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
 
-    _autosize(ws, {"A": 42, "B": 16, "C": 12})
+    widths = {"A": 30}
+    for j in range(len(labels)):
+        widths[get_column_letter(2 + j)] = 13
+    _autosize(ws, widths)
+    return r + 2
 
 
-def _write_peer_sheet(ws, peer_df, symbol: str):
-    ws.cell(row=1, column=1, value=f"Confronto concorrenti — {symbol}").font = _title_font(14)
-    if peer_df is None or peer_df.empty:
-        ws.cell(row=3, column=1, value="Nessun concorrente impostato per questo titolo.").font = _label_font()
+# ---------------------------------------------------------------------------
+# Foglio 5 — Peer group (trasparenza sulla distribuzione usata per i percentili)
+# ---------------------------------------------------------------------------
+
+def _write_peer_group_sheet(ws, symbol: str, result: dict):
+    ws.cell(row=1, column=1, value=f"Peer group di settore usato per i percentili — {symbol}").font = _title_font(14)
+    peer_metrics = result.get("peer_metrics", {})
+    if not peer_metrics:
+        ws.cell(row=3, column=1, value="Nessun peer disponibile (peer group non caricato o settore senza lista curata).").font = _label_font()
         return
 
+    metric_keys = list(_METRIC_LABELS_IT.keys())
     header_row = 3
-    cols = list(peer_df.columns)
-    for j, col in enumerate(cols):
-        ws.cell(row=header_row, column=1 + j, value=col)
-    _style_header_row(ws, header_row, len(cols))
+    ws.cell(row=header_row, column=1, value="Ticker")
+    for j, key in enumerate(metric_keys):
+        ws.cell(row=header_row, column=2 + j, value=_METRIC_LABELS_IT[key])
+    _style_header_row(ws, header_row, 1 + len(metric_keys))
 
-    data_start = header_row + 1
-    for i, (_, rec) in enumerate(peer_df.iterrows()):
-        for j, col in enumerate(cols):
-            val = rec[col]
-            cell = ws.cell(row=data_start + i, column=1 + j, value=val)
-            cell.font = _input_font() if col != "Ticker" else _label_font(bold=(i == 0))
-            if col not in ("Ticker",):
-                cell.number_format = "0.00"
-
-    avg_row = data_start + len(peer_df)
-    ws.cell(row=avg_row, column=1, value="Media concorrenti (esclude il titolo analizzato)").font = _label_font(bold=True)
-    if len(peer_df) > 1:
-        for j, col in enumerate(cols[1:], start=1):
-            col_letter = get_column_letter(1 + j)
-            formula = f"=IFERROR(AVERAGE({col_letter}{data_start + 1}:{col_letter}{data_start + len(peer_df) - 1}),\"n/d\")"
-            cell = ws.cell(row=avg_row, column=1 + j, value=formula)
-            cell.font = _formula_font()
+    row = header_row + 1
+    for ticker in sorted(peer_metrics.keys()):
+        m = peer_metrics[ticker]
+        ws.cell(row=row, column=1, value=ticker).font = _label_font(bold=True)
+        for j, key in enumerate(metric_keys):
+            cell = ws.cell(row=row, column=2 + j, value=m.get(key))
+            cell.font = _input_font()
             cell.number_format = "0.00"
-
-    _autosize(ws, {get_column_letter(1 + j): 16 for j in range(len(cols))} | {"A": 14})
-
-
-def _write_summary_sheet(ws, symbol: str, info: dict, price, sections: dict, breakdown: dict, synthesis: str):
-    ws.cell(row=1, column=1, value=f"Analisi Fondamentale — {info.get('name', symbol)} ({symbol})").font = _title_font(16)
-    ws.cell(row=2, column=1, value="Portfolio Manager · dati Yahoo Finance · solo a scopo informativo, non consulenza finanziaria").font = Font(
-        name=FONT_NAME, italic=True, size=9, color=GRAY
-    )
-
-    row = 4
-    facts = [
-        ("Prezzo", price), ("Settore", info.get("sector")),
-        ("Capitalizzazione", info.get("market_cap")), ("Valuta", info.get("currency")),
-    ]
-    for label, val in facts:
-        ws.cell(row=row, column=1, value=label).font = _label_font(bold=True)
-        cell = ws.cell(row=row, column=2, value=val)
-        cell.font = _input_font()
-        if label == "Capitalizzazione":
-            cell.number_format = "$#,##0,,\"M\""
         row += 1
 
-    target = info.get("target_mean_price")
-    n_analysts = info.get("num_analyst_opinions")
-    if target and price and n_analysts:
-        row += 1
-        ws.cell(row=row, column=1, value="Consensus reale degli analisti (dato di mercato, non una stima dell'app)").font = _title_font(11)
-        row += 1
-        ws.cell(row=row, column=1, value="Target price medio").font = _label_font()
-        cell = ws.cell(row=row, column=2, value=target)
-        cell.font = _input_font()
-        cell.number_format = "$#,##0.00;($#,##0.00);-"
-        row += 1
-        ws.cell(row=row, column=1, value="Numero di analisti").font = _label_font()
-        cell = ws.cell(row=row, column=2, value=n_analysts)
-        cell.font = _input_font()
-        row += 1
-        ws.cell(row=row, column=1, value="Rendimento implicito vs prezzo attuale (%)").font = _label_font(bold=True)
-        col_price_cell = None
-        for r in range(4, row):
-            if ws.cell(row=r, column=1).value == "Prezzo":
-                col_price_cell = f"B{r}"
-                break
-        cell = ws.cell(
-            row=row, column=2,
-            value=f"=IFERROR(B{row-2}/{col_price_cell}-1,\"n/d\")" if col_price_cell else None,
-        )
-        cell.font = Font(name=FONT_NAME, bold=True, color=NAVY)
-        cell.number_format = "+0.0%;-0.0%"
-        row += 1
-        ws.cell(row=row, column=1, value=(
-            "Raccomandazione aggregata: " + str(info.get("recommendation_key") or "n/d")
-        )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
-        row += 1
+    ws.cell(row=row + 1, column=1, value=(
+        "Fonte: cache locale (src/fundamental_cache.py), aggiornata al più ogni 90 giorni dai bilanci "
+        "Yahoo Finance dei ticker del peer group curato (src/sector_universe.py). Serve a rendere "
+        "verificabile il percentile mostrato in pagina, non è una raccomandazione sui peer stessi."
+    )).font = Font(name=FONT_NAME, italic=True, size=9, color=GRAY)
 
-    row += 1
-    total = breakdown.get("total")
-    ws.cell(row=row, column=1, value="Punteggio composito").font = _label_font(bold=True)
-    tcell = ws.cell(row=row, column=2, value=total)
-    tcell.font = Font(name=FONT_NAME, bold=True, color=(GREEN if total and total > 0.15 else (RED if total and total < -0.15 else GRAY)))
-    tcell.number_format = "+0.00;-0.00"
-    row += 2
-
-    ws.cell(row=row, column=1, value="Le tre domande, in chiaro").font = _title_font(11)
-    row += 1
-    axis_labels = {
-        "profitability": "È profittevole?", "sustainability": "È sostenibile nel tempo?",
-        "outlook": "Ha buone prospettive?",
-    }
-    for key, label in axis_labels.items():
-        s = sections.get(key)
-        if not s:
-            continue
-        ws.cell(row=row, column=1, value=label).font = _label_font()
-        v = s.get("verdict", "neutro")
-        color = {"positivo": GREEN, "negativo": RED, "neutro": GRAY}[v]
-        vcell = ws.cell(row=row, column=2, value=v.capitalize())
-        vcell.font = Font(name=FONT_NAME, bold=True, color=color)
-        row += 1
-
-    row += 1
-    ws.cell(row=row, column=1, value="Sintesi").font = _title_font(11)
-    row += 1
-    ws.cell(row=row, column=1, value=synthesis)
-    ws.cell(row=row, column=1).alignment = Alignment(wrap_text=True, vertical="top")
-    ws.merge_cells(start_row=row, start_column=1, end_row=row + 6, end_column=6)
-    ws.row_dimensions[row].height = 100
-
-    _autosize(ws, {"A": 32, "B": 20, "C": 14, "D": 14, "E": 14, "F": 14})
+    widths = {"A": 12}
+    for j in range(len(metric_keys)):
+        widths[get_column_letter(2 + j)] = 16
+    _autosize(ws, widths)
 
 
-def build_excel_report(symbol: str, info: dict, price, narrative: dict) -> bytes:
-    """Costruisce il workbook completo dell'analisi fondamentale e lo
-    ritorna come bytes, pronto per `st.download_button`."""
-    sections = {s["key"]: s for s in narrative["sections"]}
-    breakdown = narrative.get("score_breakdown", {})
-    currency = info.get("currency")
+# ---------------------------------------------------------------------------
+# Orchestrazione
+# ---------------------------------------------------------------------------
 
+def build_excel_report(symbol: str, info: dict, price, result: dict) -> bytes:
+    """Costruisce il workbook completo del Fundamental Score e lo ritorna
+    come bytes, pronto per `st.download_button`. `result` è l'output di
+    `fundamental_score.build_fundamental_score()`."""
     wb = Workbook()
     ws_summary = wb.active
     ws_summary.title = "Sintesi"
-    _write_summary_sheet(ws_summary, symbol, info, price, sections, breakdown, narrative.get("synthesis", ""))
+    _write_summary_sheet(ws_summary, symbol, info, price, result)
+
+    ws_metrics = wb.create_sheet("Metriche core")
+    _write_metrics_sheet(ws_metrics, symbol, result)
+
+    ws_cat = wb.create_sheet("Categorie e pesi")
+    _write_categories_sheet(ws_cat, symbol, result)
 
     ws_annual = wb.create_sheet("Bilancio annuale")
-    annual_hist = sections.get("profitability", {}).get("annual", {})
-    _write_raw_table(ws_annual, 1, annual_hist, f"Bilancio annuale — {symbol}")
+    hist = finmod.get_financial_history(symbol, freq="annual")
+    _write_raw_table(ws_annual, 1, hist, f"Bilancio annuale — {symbol}")
 
-    ws_ratio = wb.create_sheet("Ratio e punteggio")
-    _write_ratio_sheet(ws_ratio, symbol, sections, breakdown, currency)
-
-    peer_table = sections.get("outlook", {}).get("peer_table")
-    ws_peer = wb.create_sheet("Concorrenti")
-    _write_peer_sheet(ws_peer, peer_table, symbol)
+    ws_peers = wb.create_sheet("Peer group")
+    _write_peer_group_sheet(ws_peers, symbol, result)
 
     buf = io.BytesIO()
     wb.save(buf)

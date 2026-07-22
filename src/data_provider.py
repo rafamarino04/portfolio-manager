@@ -83,12 +83,26 @@ def get_info(symbol: str) -> dict:
         "free_cashflow": None,
         "trailing_eps": None,
         "forward_eps": None,
+        "industry": None,
+        "enterprise_value": None,
+        "ev_to_ebitda": None,
+        "ev_to_revenue": None,
+        "shares_outstanding": None,
+        "quick_ratio": None,
+        "current_ratio_info": None,
+        "payout_ratio": None,
+        "earnings_growth": None,
+        "operating_cashflow": None,
+        "gross_margins": None,
+        "operating_margins": None,
+        "ebitda_margins": None,
     }
     try:
         t = get_ticker(symbol)
         info = t.info
         out["name"] = info.get("shortName") or info.get("longName") or symbol
         out["sector"] = info.get("sector")
+        out["industry"] = info.get("industry")
         out["currency"] = info.get("currency")
         out["market_cap"] = info.get("marketCap")
         out["pe_ratio"] = info.get("trailingPE")
@@ -108,6 +122,18 @@ def get_info(symbol: str) -> dict:
         out["free_cashflow"] = info.get("freeCashflow")
         out["trailing_eps"] = info.get("trailingEps")
         out["forward_eps"] = info.get("forwardEps")
+        out["enterprise_value"] = info.get("enterpriseValue")
+        out["ev_to_ebitda"] = info.get("enterpriseToEbitda")
+        out["ev_to_revenue"] = info.get("enterpriseToRevenue")
+        out["shares_outstanding"] = info.get("sharesOutstanding")
+        out["quick_ratio"] = info.get("quickRatio")
+        out["current_ratio_info"] = info.get("currentRatio")
+        out["payout_ratio"] = info.get("payoutRatio")
+        out["earnings_growth"] = info.get("earningsGrowth")
+        out["operating_cashflow"] = info.get("operatingCashflow")
+        out["gross_margins"] = info.get("grossMargins")
+        out["operating_margins"] = info.get("operatingMargins")
+        out["ebitda_margins"] = info.get("ebitdaMargins")
     except Exception:
         pass
     return out

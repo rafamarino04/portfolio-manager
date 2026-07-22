@@ -24,12 +24,12 @@ attivo.
 - `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
 - `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
 - `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
-- `pages/8_Analisi_Fondamentale.py` — come sta lavorando l'azienda e quali sono i prospetti futuri, per un singolo titolo: bilancio storico (ricavi/utile/margini/FCF/debito), qualità e valutazione, contesto settoriale (ETF di settore + concorrenti a scelta), news con sentiment automatico, e una sintesi finale
+- `pages/8_Analisi_Fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
 - `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
-- `data/peers.csv` — i concorrenti che hai indicato per ogni titolo (creato al primo utilizzo della pagina Analisi Fondamentale)
+- `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
 - `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
 - `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
@@ -210,72 +210,73 @@ settimanali per l'investimento di lungo periodo — così puoi cambiare la
 profondità dell'analisi (grafico, sezioni e piano operativo insieme) in
 base al tipo di decisione, senza lasciare la pagina.
 
-## Analisi Fondamentale: come funziona
+## Analisi Fondamentale: come funziona il Fundamental Score
 
-La pagina **Analisi Fondamentale** risponde a tre domande concrete su un
-singolo titolo — quelle che contano davvero per farsi un'idea
-d'investimento, non un elenco di metriche fine a se stesso. È volutamente
-limitata ai singoli titoli: le ETF non hanno un bilancio proprio, quindi
-richiederebbero un'altra logica (prevista come sviluppo successivo).
+La pagina **Analisi Fondamentale** calcola un **Fundamental Score (0-100)**
+per un singolo titolo, con la stessa struttura a tre sezioni delle altre
+pagine di analisi: **Portafoglio**, **Preferiti** e **Cerca**. Non è un
+modello di fair value — è uno strumento di screening comparativo, pensato
+per un orizzonte di medio termine, costruito seguendo una specifica
+tecnica (metriche, formule e pesi settoriali) fornita esplicitamente per
+questo modulo. Le banche/assicurazioni restano escluse: EBITDA, ROIC, EV
+e i coefficienti Piotroski/Altman non sono significativi per il loro
+modello di business.
 
-Deliberatamente **non** include stime di fair value costruite su
-assunzioni proprie (formule alla Graham, prezzi impliciti da una
-reversione di multiplo su una crescita attesa indovinata): quel tipo di
-calcolo trasforma un'assunzione in un numero dall'aria precisa, senza
-aggiungere affidabilità reale. Dove serve un riferimento di prezzo
-esterno si usa il **consensus reale degli analisti** che coprono il
-titolo (target price e raccomandazione aggregata, dato di mercato preso
-da Yahoo Finance, non una stima di questa app) — sempre mostrato insieme
-al numero di analisti che lo compongono, per poter giudicare quanto
-pesarlo.
+**Il principio guida è la parsimonia**: invece di un elenco lungo di
+multipli slegati tra loro, un nucleo di **8 metriche a bassa correlazione
+reciproca** (una per dimensione: creazione di valore, qualità degli
+utili, leva, valutazione, capital allocation) più due **badge standalone**
+con pedigree accademico (Piotroski F-Score, Altman Z-Score) — non
+soglie assolute, ma **percentili contro un peer group curato per
+settore** (15 titoli liquidi e rappresentativi per ciascuno degli 11
+settori di Yahoo Finance, in `src/sector_universe.py`), perché una stessa
+soglia di leva o di margine ha un significato diverso in settori diversi.
 
-- **È profittevole?** Ricavi, EBITDA (e margine EBITDA%), utile netto sui
-  dati storici reali, e — non solo l'ultimo dato — se l'azienda è stata
-  in utile in modo coerente su tutti i periodi disponibili o solo a
-  tratti. Tabella completa (con numeri finalmente leggibili: valuta,
-  scala K/Mln/Mld, punti percentuali) e grafico ricavi/EBITDA/utile netto
-  per periodo, più i dati trimestrali grezzi in un pannello a parte.
-- **È sostenibile nel tempo?** Il margine netto si sta espandendo o
-  comprimendo nel tempo; il ROIC (rendimento sul capitale investito)
-  confrontato con il WACC (costo del capitale, via CAPM) — il test
-  standard in finanza aziendale per capire se l'azienda crea o distrugge
-  valore economico, non solo "ha un ROE alto"; la leva (debito
-  netto/EBITDA) e se sta aumentando o calando nel tempo; copertura degli
-  interessi e liquidità a breve; e un confronto pluriennale tra utile
-  netto e free cash flow che segnala (non certifica) un possibile
-  problema di qualità degli utili se il primo supera sistematicamente il
-  secondo.
-- **Ha buone prospettive, anche se i dati storici dicono il contrario?**
-  Qui i numeri passati da soli non bastano: si guarda al P/E attuale
-  rispetto al proprio range storico (solo per capire quanto ottimismo
-  potrebbe già essere nel prezzo, non per calcolare un target), al target
-  price e alla raccomandazione aggregata di chi segue davvero il titolo,
-  al trend del settore (ETF di settore come proxy) e alla forza relativa
-  del titolo rispetto al settore, al confronto diretto con eventuali
-  concorrenti indicati, e al tono delle news recenti. Quando questo
-  quadro va in una direzione diversa dai numeri storici — un'azienda con
-  numeri deboli ma settore/analisti/sentiment in miglioramento, o
-  viceversa — la sintesi lo segnala esplicitamente invece di far finta
-  che tutto converga sempre.
-
-In fondo, una **Sintesi** che risponde in chiaro alle tre domande (sì/no/
-parzialmente) e segnala esplicitamente quando le prospettive contraddicono
-i numeri storici.
-
-**Punteggio composito**: ogni domanda produce un sotto-punteggio da -1 a
-+1 con una motivazione esplicita (mai una scatola nera); le tre domande
-si combinano con pesi dichiarati (profittabilità 35%, sostenibilità 35%,
-prospettive 30%), che si ridistribuiscono automaticamente se una manca
-per dati insufficienti. È volutamente una **lettura secondaria** — le tre
-risposte in chiaro restano l'output principale — pensata come base per un
-futuro motore di punteggio multi-fattoriale che unirà anche l'analisi
-tecnica e quella macro.
+- **Le 8 metriche core**: ROIC (medie pluriennali di EBIT e capitale
+  investito, per smorzare il rumore ciclico), gross-profits-to-assets
+  (Novy-Marx), FCF conversion (FCF/utile netto), accruals ratio (Sloan —
+  utili "di cassa" o solo contabili), debito netto/EBITDA, copertura
+  interessi, EV/EBIT earnings yield, shareholder yield (dividendi +
+  buyback netti su capitalizzazione) — più CAGR ricavi/EPS e volatilità
+  della crescita per la categoria "Qualità della crescita".
+- **Piotroski F-Score (0-9)**: 9 criteri binari su profittabilità, leva/
+  liquidità ed efficienza operativa, confrontando l'anno corrente con il
+  precedente (Piotroski, 2000) — mostrato come badge distinto, con il
+  dettaglio dei singoli criteri in un pannello a parte.
+- **Altman Z-Score / Z″**: predittore di distress finanziario, con la
+  variante corretta in base al settore (manifatturiero vs
+  non-manifatturiero). Se il titolo è in zona di distress, il punteggio
+  composito viene **limitato a 40** indipendentemente dagli altri punti
+  di forza — la difesa principale contro i "value trap".
+- **Percentile sector-relative**: ogni metrica viene winsorizzata al
+  5°/95° percentile del peer group e trasformata in un percentile 0-100
+  (orientato così che un valore più alto sia sempre "meglio"), poi
+  aggregata in 6 sub-score di categoria, sempre mostrati insieme al
+  punteggio finale — mai solo il numero.
+- **Pesi settore/cap-adjusted**: i 6 sub-score si combinano con pesi
+  diversi per 6 profili settoriali (Growth/Tech, Value/Industrial,
+  Utilities/Defensive, Consumer, Healthcare, Energy/Materials) e per
+  dimensione (mega/large, mid, small/micro — il peso del Piotroski sale
+  per le small cap, dove l'evidenza empirica è più forte). Se una
+  metrica o un'intera categoria manca, il suo peso si ridistribuisce
+  automaticamente sulle altre disponibili; sotto una copertura dati del
+  60% lo score non viene mostrato ("dati insufficienti") invece di
+  imputare un valore neutro che favorirebbe le aziende deboli.
+- **Flag testuali automatici**: FCF conversion in calo, buyback dichiarati
+  ma azioni in aumento (diluizione da SBC), P/E al 90° percentile della
+  propria storia, ROIC sotto il costo del capitale stimato (CAPM/WACC),
+  zona di distress Altman — spesso più utili del numero per decidere.
+- **Peer group con caching**: i fondamentali dei ~15 peer per settore
+  sono salvati in `data/fundamentals_cache.json` e riusati per ~90 giorni
+  (i fondamentali cambiano su base trimestrale), per non richiamare
+  Yahoo Finance su 15 titoli ad ogni singola analisi.
 
 **Export Excel**: il bottone "Scarica Excel" in alto genera un workbook
-con sintesi (incluso il consensus analisti), bilancio annuale (con
-margini calcolati da formule Excel leggibili e ricontrollabili, non
-numeri congelati), ratio/punteggio e confronto concorrenti — utile per
-archiviare le proprie analisi o incollarle in un modello più ampio.
+con sintesi (punteggio, badge, tesi, punti di forza/attenzione), le 8
+metriche core con percentile, categorie e pesi (con il punteggio
+composito come vera formula Excel ricalcolabile), bilancio annuale e
+l'intero peer group usato per i percentili — per verificare o archiviare
+l'analisi fuori dall'app.
 
 ## Sviluppo/test in locale (opzionale)
 
@@ -316,29 +317,37 @@ streamlit run app.py
   titolo. Stop e target sono un punto di partenza tecnico, non tengono
   conto di commissioni, slippage, orari di mercato o della tua gestione
   del rischio complessiva.
-- I prospetti di bilancio (Analisi Fondamentale) dipendono dalla
-  copertura Yahoo Finance: spesso incompleti o assenti per titoli non
-  statunitensi o a bassa capitalizzazione. Le etichette delle voci di
-  bilancio non sono rigidamente standardizzate: alcune metriche (es.
-  "Utile lordo" per le società finanziarie, o EBITDA/interessi
-  passivi/attivo corrente per titoli a copertura limitata) possono
-  risultare "n/d" anche quando l'azienda esiste ed è quotata — in quel
-  caso ROIC, WACC, copertura interessi o current ratio non vengono
-  mostrati invece di essere stimati su dati incompleti.
-- Il P/E storico (usato nella domanda "ha buone prospettive?" solo come
-  contesto, non come target di prezzo) richiede almeno 3 anni di prezzi
-  settimanali e diversi trimestri di EPS: se il titolo è quotato da poco o
-  ha una copertura Yahoo Finance scarsa, questa parte del testo non viene
-  mostrata. Il WACC usa un costo del debito stimato da interessi
-  passivi/debito totale quando disponibile, altrimenti un proxy generico
-  (tasso privo di rischio + spread di credito standard), dichiarato in
-  pagina.
-- Il contesto settoriale usa ETF di settore SPDR, che coprono il mercato
-  USA: per titoli non statunitensi è un proxy imperfetto del settore
-  reale del titolo, utile come indicazione generale più che come
-  benchmark esatto.
-- Il target price e la raccomandazione aggregata degli analisti (usati
-  nella domanda "ha buone prospettive?") sono un consensus reale ma non
+- Il **Fundamental Score** è un ranking **relativo** al peer group di
+  settore: in un settore uniformemente debole, uno score alto significa
+  "il migliore di un gruppo scarso", non un titolo oggettivamente solido
+  — per questo la pagina mostra sempre gli anchor assoluti (ROIC vs WACC,
+  bande di leva, zona Altman) accanto al percentile.
+- Piotroski e Altman sono **backward-looking** (bilanci già pubblicati):
+  sono filtri di rischio e sanity check, non segnali predittivi
+  standalone. I coefficienti Altman sono tarati su manifatturieri USA del
+  secolo scorso — per questo la pagina usa la variante Z″ per i settori
+  non-manifatturieri. L'edge del Piotroski F-Score si è indebolito sui
+  mega cap molto liquidi e coperti dagli analisti.
+- I pesi settoriali (profilo Growth/Tech, Value/Industrial, ecc.) sono un
+  **punto di partenza ragionato**, non calibrato con un backtest — la
+  specifica stessa lo dichiara esplicitamente come primo passo da
+  affinare nel tempo.
+- Il peer group per settore (`src/sector_universe.py`) è una selezione
+  curata di ~15 titoli liquidi per ciascuno degli 11 settori Yahoo
+  Finance, non un campionamento esaustivo di mercato: un provider dati a
+  pagamento con copertura completa per sotto-industria GICS darebbe
+  percentili più precisi. La mappatura da 11 settori a 6 profili di peso
+  ha due casi "misti" dichiarati (Communication Services e Real Estate).
+- I REIT (settore Real Estate) userebbero un profilo dedicato con FFO/
+  AFFO al posto di EPS/P/E: non ancora implementato, la pagina lo segnala
+  esplicitamente e usa il profilo generico più vicino come approssimazione.
+- I prospetti di bilancio dipendono dalla copertura Yahoo Finance: spesso
+  incompleti o assenti per titoli non statunitensi o a bassa
+  capitalizzazione. Sotto una copertura dati del 60% lo score non viene
+  mostrato ("dati insufficienti") invece di essere stimato su dati
+  incompleti.
+- Il target price e la raccomandazione aggregata degli analisti (mostrati
+  come contesto on-demand, non nello score) sono un consensus reale ma non
   infallibile: riflettono le stime di chi copre il titolo in quel momento,
   possono essere lente ad aggiornarsi, e con pochi analisti (l'app lo
   segnala) vanno pesate molto meno. Nessuna delle regole di punteggio di
