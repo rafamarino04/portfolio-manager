@@ -63,6 +63,14 @@ ARCHETYPE_QUALITY_WEIGHTS = {
 
 DEFAULT_ARCHETYPE = "mature_compounder"
 
+# FIX v2.1-8 (NC-19) — soglia oltre la quale un portafoglio di marketable
+# securities è abbastanza grande da poter spiegare DA SOLO un CFI positivo
+# (rotazione/scadenza netta di titoli in portafoglio), senza che ciò
+# implichi alcuna dismissione di asset operativi. Regola GENERALE per
+# qualsiasi titolo cash-rich (nessuna eccezione per ticker specifici):
+# valore preso testualmente dalla specifica v2.1 (">20% del totale attivo").
+SECURITIES_TO_TA_OVERRIDE_THRESHOLD_PCT = 20.0
+
 
 def _sign(x: float | None) -> str | None:
     if x is None:
@@ -253,11 +261,50 @@ def assign_archetype(observables: dict, dickinson_latest: str | None, roic: floa
     return {"archetype": DEFAULT_ARCHETYPE, "reasons": reasons}
 
 
+def _dickinson_securities_override(hist: dict) -> bool:
+    """NC-19 (v2.1) — REGOLA GENERALE, non un caso specifico: il segno del
+    CFI (cash flow da investimento) usato da Dickinson assume che un CFI
+    positivo significhi dismissione di asset operativi (-> Decline/
+    Shake-out). Ma in un'azienda con un grande portafoglio di marketable
+    securities, il CFI può risultare positivo semplicemente per la
+    rotazione/scadenza netta di titoli in portafoglio — un artefatto
+    sistematico che colpisce qualunque azienda cash-rich, non solo
+    un titolo particolare. Trigger (§FIX8 v2.1): CFI>0 E securities/attivo
+    totale > SECURITIES_TO_TA_OVERRIDE_THRESHOLD_PCT E OCF>0 (l'azienda non
+    sta liquidando asset per sopravvivere: l'OCF resta sano)."""
+    ocf_latest = finmod._last(hist.get("operating_cash_flow"))
+    cfi_latest = finmod._last(hist.get("cfi"))
+    securities_latest = finmod._last(hist.get("securities"))
+    ta_latest = finmod._last(hist.get("total_assets"))
+    if ocf_latest is None or cfi_latest is None or securities_latest is None or not ta_latest:
+        return False
+    securities_to_ta_pct = securities_latest / ta_latest * 100
+    return (
+        cfi_latest > 0
+        and ocf_latest > 0
+        and securities_to_ta_pct > SECURITIES_TO_TA_OVERRIDE_THRESHOLD_PCT
+    )
+
+
 def build_lifecycle_profile(hist: dict, roic: float | None, wacc: float | None) -> dict:
     """Orchestrazione end-to-end: stadio Dickinson (+ stabilità),
     osservabili operative, archetipo assegnato e pesi Quality associati."""
     stages = dickinson_history(hist)
     latest_stage, stable = dickinson_stability(stages)
+
+    # NC-19 (v2.1): se il CFI positivo è spiegato dal portafoglio titoli,
+    # forziamo lo stadio a "Mature" PRIMA di assegnare l'archetipo (altrimenti
+    # un CFI positivo distorto trascinerebbe erroneamente l'archetipo verso
+    # "turnaround" tramite la regola 1 di assign_archetype). Impostare anche
+    # stable=True è intenzionale: il segnale non è "instabile", è spiegato —
+    # così il modello di confidenza (business_model_fit) non lo penalizza,
+    # riusando la logica già esistente invece di introdurre un caso speciale.
+    dickinson_overridden = False
+    if _dickinson_securities_override(hist):
+        latest_stage = "Mature"
+        stable = True
+        dickinson_overridden = True
+
     observables = compute_observables(hist)
     assignment = assign_archetype(observables, latest_stage, roic, wacc)
     archetype = assignment["archetype"]
@@ -265,6 +312,7 @@ def build_lifecycle_profile(hist: dict, roic: float | None, wacc: float | None) 
         "dickinson_stages_history": stages,
         "dickinson_latest": latest_stage,
         "dickinson_stable": stable,
+        "dickinson_overridden_by_securities": dickinson_overridden,
         "observables": observables,
         "archetype": archetype,
         "archetype_label": ARCHETYPE_LABELS_IT[archetype],

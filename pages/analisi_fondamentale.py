@@ -94,7 +94,17 @@ def _wacc_and_risk_free(info: dict, hist: dict) -> tuple[float | None, float | N
     return w, risk_free
 
 
-def _render_matrix(matrix: dict | None, key_prefix: str):
+def _render_matrix(matrix: dict | None, symbol: str, key_prefix: str):
+    """Griglia 2x2 Quality x Valuation. FIX v2.1-1: l'HTML va costruito
+    come stringa SENZA indentazione iniziale sulle righe — passato a
+    st.markdown con indentazione (come nella versione precedente, dove
+    l'f-string multilinea ereditava l'indentazione del blocco Python),
+    un blocco di 4+ spazi a inizio riga viene interpretato da CommonMark
+    come blocco di codice preformattato, quindi i tag comparivano come
+    testo grezzo (es. `</div>` visibile a schermo) invece di essere
+    renderizzati. Qui ogni cella è una singola riga di stringa concatenata,
+    e il quadrante attivo mostra il ticker realmente analizzato (non un
+    placeholder statico)."""
     quadrants = [
         ("high", "cheap", "Alta Quality · Cheap", "wonderful"),
         ("high", "expensive", "Alta Quality · Expensive", "quality_at_price"),
@@ -108,15 +118,19 @@ def _render_matrix(matrix: dict | None, key_prefix: str):
         border_color = ACCENT if is_active else BORDER
         bg_color = SURFACE_RAISED if is_active else SURFACE
         text_color = TEXT_PRIMARY if is_active else TEXT_MUTED
+        if is_active:
+            marker_html = f'<div style="font-size:12px;color:{ACCENT};margin-top:6px;">● {symbol}</div>'
+        else:
+            marker_html = f'<div style="font-size:12px;color:{TEXT_MUTED};margin-top:6px;">–</div>'
+        cell_html = (
+            f'<div style="border:1.5px solid {border_color};background:{bg_color};'
+            f'border-radius:8px;padding:14px;margin-bottom:12px;min-height:88px;">'
+            f'<div style="font-size:12px;color:{text_color};font-weight:600;">{cell_label}</div>'
+            f'{marker_html}'
+            f'</div>'
+        )
         with cols[i % 2]:
-            st.markdown(
-                f"""<div style="border:1.5px solid {border_color};background:{bg_color};
-                border-radius:8px;padding:14px;margin-bottom:12px;min-height:88px;">
-                <div style="font-size:12px;color:{text_color};font-weight:600;">{cell_label}</div>
-                {f'<div style="font-size:12px;color:{ACCENT};margin-top:6px;">● titolo qui</div>' if is_active else ''}
-                </div>""",
-                unsafe_allow_html=True,
-            )
+            st.markdown(cell_html, unsafe_allow_html=True)
     if matrix:
         st.markdown(f"**{matrix['label']}**")
         st.caption(matrix["action"])
@@ -159,7 +173,10 @@ def render_fundamental_card(symbol: str, key_prefix: str):
     st.markdown(fscore.build_thesis_text(result), unsafe_allow_html=True)
 
     conf = result["confidence"]
-    confidence_badge_text = f"Affidabilità: {conf['level']}"
+    # FIX v2.1-2: il valore numerico del confidence score è sempre mostrato
+    # accanto all'etichetta, per permettere di verificare il badge invece
+    # di doversi fidare della sola parola Alta/Media/Bassa.
+    confidence_badge_text = f"Affidabilità: {conf['level']} ({conf['score']:.0f}/100)"
     confidence_badge_html = badge(confidence_badge_text, CONFIDENCE_BADGE_KIND.get(conf["level"], "info"))
     st.markdown(
         f"{confidence_badge_html} "
@@ -170,6 +187,11 @@ def render_fundamental_card(symbol: str, key_prefix: str):
     )
     if conf["explanation"]:
         st.caption("Fattori che riducono l'affidabilità: " + "; ".join(conf["explanation"]) + ".")
+    if conf.get("downgraded_for_consistency"):
+        st.caption(
+            "Nota: il punteggio numerico sarebbe in banda \"Alta\", ma l'etichetta è stata declassata a "
+            "\"Media\" per coerenza con i fattori di riduzione elencati sopra."
+        )
     with st.expander("Perché questo archetipo?"):
         st.caption(" · ".join(result["archetype_reasons"]))
         st.caption(f"Bucket di soglie usato: {result.get('bucket_label', 'n/d')}.")
@@ -192,30 +214,76 @@ def render_fundamental_card(symbol: str, key_prefix: str):
         st.caption(f"Numero unico secondario (media Quality/Valuation, da non usare come segnale primario): {result['blended']:.0f}/100.")
 
     st.markdown("#### Matrice Quality x Valuation")
-    _render_matrix(matrix, key_prefix)
+    _render_matrix(matrix, symbol, key_prefix)
 
     st.markdown("#### Prospettive per categoria (asse Quality)")
+    # FIX v2.1-7: la tabella includeva solo le 4 categorie Quality, senza
+    # la riga Piotroski F-Score — che però ha un peso proprio nel composito
+    # (cap-adjusted, vedi PIOTROSKI_WEIGHT_BY_CAP) — quindi i pesi mostrati
+    # non sommavano a 100% e non si poteva verificare il calcolo. Qui si
+    # aggiunge la riga Piotroski (col peso EFFETTIVAMENTE applicato a
+    # questo titolo, non quello di default) e una riga di totale.
     rows = []
     weights_used = quality.get("category_weights_used", {})
+    weight_total = 0.0
     for cat in fscore.CATEGORIES:
         sub = quality["subscores"].get(cat)
+        w = weights_used.get(cat)
+        if w is not None:
+            weight_total += w
         rows.append({
             "Categoria": fscore.CATEGORY_LABELS_IT[cat],
             "Punteggio assoluto": f"{sub:.0f}" if sub is not None else "n/d",
             "Banda": fscore.score_band_label(sub),
-            "Peso nel composito": f"{weights_used.get(cat, 0):.1f}%" if weights_used.get(cat) is not None else "n/d",
+            "Peso nel composito": f"{w:.1f}%" if w is not None else "n/d",
         })
+
+    piotroski_weight = quality.get("piotroski_weight_used")
+    piotroski_score = result["piotroski"].get("score")
+    piotroski_scaled = (piotroski_score / 9 * 100) if piotroski_score is not None else None
+    if piotroski_weight is not None:
+        weight_total += piotroski_weight
+    rows.append({
+        "Categoria": "Piotroski F-Score (scalato 0-100)",
+        "Punteggio assoluto": f"{piotroski_scaled:.0f}" if piotroski_scaled is not None else "n/d",
+        "Banda": fscore.score_band_label(piotroski_scaled) if piotroski_scaled is not None else "n/d",
+        "Peso nel composito": f"{piotroski_weight:.1f}%" if piotroski_weight is not None else "n/d",
+    })
+    rows.append({
+        "Categoria": "Totale",
+        "Punteggio assoluto": "",
+        "Banda": "",
+        "Peso nel composito": f"{weight_total:.1f}%" if weight_total else "n/d",
+    })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_categories")
+    if weight_total and abs(weight_total - 100.0) > 0.5:
+        st.caption(
+            f"Nota: i pesi mostrati sommano a {weight_total:.1f}% invece di 100% — verificare la copertura "
+            "dati (i pesi delle categorie non disponibili vengono redistribuiti sulle altre)."
+        )
 
     with st.expander("Metriche core (per verificare i punteggi)"):
         metrics = result["metrics"]
+        stale_fields = metrics.get("stale_fields", {})
         for cat in fscore.CATEGORIES:
             st.markdown(f"**{fscore.CATEGORY_LABELS_IT[cat]}**")
             cols = st.columns(4)
             for i, key in enumerate(CATEGORY_MEMBER_KEYS[cat]):
                 label, _ = METRIC_DISPLAY[key]
                 with cols[i % 4]:
-                    st.metric(label, _format_metric_value(key, metrics.get(key)))
+                    value_str = _format_metric_value(key, metrics.get(key))
+                    stale = stale_fields.get(key)
+                    # FIX v2.1-4: mai mostrare un valore stale senza
+                    # etichetta — l'anno di riferimento va sempre a fianco.
+                    if stale:
+                        st.metric(label, value_str, help=(
+                            f"Dato dell'esercizio {stale['year']} — più vecchio delle altre metriche di "
+                            f"questa categoria di circa {stale['months_behind']} mesi. Pesato a metà nel "
+                            "sub-score, confidenza ridotta di conseguenza."
+                        ))
+                        st.markdown(badge(f"dato {stale['year']}", "warn"), unsafe_allow_html=True)
+                    else:
+                        st.metric(label, value_str)
 
     st.markdown("#### Componenti Valuation")
     v_rows = []

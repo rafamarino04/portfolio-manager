@@ -31,6 +31,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
 - `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
+- `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
@@ -300,7 +301,7 @@ lungo periodo — così puoi cambiare la profondità dell'analisi (grafico,
 sezioni, sintesi e piano operativo insieme) in base al tipo di decisione,
 senza lasciare la pagina.
 
-## Analisi Fondamentale v2.0: come funziona
+## Analisi Fondamentale v2.1: come funziona
 
 La pagina **Analisi Fondamentale** calcola due punteggi **assoluti 0-100
 separati** — **Quality** e **Valuation** — per un singolo titolo, con la
@@ -377,8 +378,8 @@ segui, ed è quindi utilizzabile anche per un singolo titolo isolato.
   Beneish M-Score (1999, 8 variabili o versione ridotta a 5 se i dati
   Yahoo Finance non bastano): un "early warning" statistico su possibili
   manipolazioni contabili, non una prova di frode.
-- **Layer di Note Critiche selettivo** (`src/critical_notes.py`, 18
-  situazioni diagnosticabili — NC-01…NC-18): emettono un avviso testuale
+- **Layer di Note Critiche selettivo** (`src/critical_notes.py`, 19
+  situazioni diagnosticabili — NC-01…NC-19): emettono un avviso testuale
   SOLO quando un trigger preciso scatta sui dati del titolo — buyback che
   distorce l'Altman Z, patrimonio netto negativo, ROE gonfiato dalla leva
   (DuPont), goodwill che distorce il ROIC, R&D non capitalizzato,
@@ -388,13 +389,42 @@ segui, ed è quindi utilizzabile anche per un singolo titolo isolato.
   cassa netta, M&A recenti, azienda in perdita, settori REIT/Utility a
   leva strutturale diversa, dati di bilancio non aggiornati, divergenza
   tra utile operativo e free cash flow, effetti valutari, base di asset
-  molto ammortizzata. Selettivo per scelta: una nota su ogni metrica
-  distruggerebbe la fiducia nello strumento.
+  molto ammortizzata, e (NC-19, v2.1) cash flow da investimento distorto
+  dal portafoglio di marketable securities. Selettivo per scelta: una
+  nota su ogni metrica distruggerebbe la fiducia nello strumento. Ogni
+  nota dichiara ora anche un **tipo di aggiustamento** (penalità reale su
+  un sub-score, soppressione di una metrica/criterio, riclassificazione,
+  o solo informativa): solo le note di tipo "penalità" possono impedire a
+  una categoria di comparire fra i Punti di forza, per evitare che la
+  stessa dimensione compaia contemporaneamente come forza e come
+  attenzione.
 - **Modello di Confidenza/Incertezza**: un punteggio 0-100 (Alta ≥75,
   Media 50-74, Bassa <50) da completezza dati, freschezza dell'ultimo
-  bilancio, stabilità del segnale Dickinson su più anni e chiarezza
-  dell'archetipo assegnato — mostrato sempre accanto agli score, con la
-  spiegazione testuale di cosa l'ha abbassato.
+  bilancio (anche per singola metrica, non solo per l'intero bilancio),
+  stabilità del segnale Dickinson su più anni e chiarezza dell'archetipo
+  assegnato — mostrato sempre accanto agli score, col valore numerico
+  esplicito e con la spiegazione testuale di cosa l'ha abbassato. Se sono
+  presenti fattori di riduzione, l'etichetta non può dichiararsi "Alta"
+  anche se il punteggio numerico lo sarebbe (vincolo di coerenza v2.1):
+  in quel caso viene declassata a "Media" e la pagina lo segnala
+  esplicitamente, per non mostrare un badge che contraddice le sue stesse
+  spiegazioni.
+
+**Correzioni v2.1** (rispetto alla prima versione di questo modulo):
+rendering della matrice 2x2 corretto (l'HTML dei quadranti veniva
+mostrato come testo grezzo invece che renderizzato, e il quadrante attivo
+mostrava un segnaposto statico invece del ticker analizzato); badge di
+affidabilità reso coerente coi fattori di riduzione elencati; note
+critiche NC-07/NC-16 ora applicano una penalità reale al sub-score
+qualità utili invece di essere solo segnalate a testo; le metriche
+derivate da un esercizio più vecchio delle altre della stessa categoria
+sono ora etichettate con l'anno di riferimento, pesate a metà nel
+sub-score e riducono la confidenza in proporzione (non solo quando
+l'intero bilancio è vecchio); i Punti di attenzione ora includono anche
+le categorie/assi in banda Debole o Scarso anche senza una nota critica
+specifica; la tabella "Prospettive per categoria" include ora la riga
+Piotroski F-Score col suo peso effettivo, e i pesi sommano visibilmente
+a 100%; aggiunta la nota critica NC-19.
 
 **Export Excel**: il bottone "Scarica Excel" in alto genera un workbook
 con sintesi (Quality, Valuation, quadrante, badge, tesi, punti di forza/
@@ -553,10 +583,24 @@ streamlit run app.py
   segnala esplicitamente, ma un profilo dedicato con FFO/AFFO al posto di
   EPS/P/E per i REIT non è ancora implementato — usa il bucket di soglie
   Utility/capital-intensive come approssimazione.
-- Il **layer di Note Critiche** è selettivo per scelta (18 situazioni
+- Il **layer di Note Critiche** è selettivo per scelta (19 situazioni
   diagnosticabili, non un controllo su ogni metrica): può quindi non
-  coprire situazioni reali non incluse nelle 18 regole — resta un
+  coprire situazioni reali non incluse nelle 19 regole — resta un
   supplemento al giudizio, non un sostituto.
+- Le **soglie assolute dell'asse Valuation** sono calibrate sul valore
+  intrinseco per settore/archetipo, non sul livello generale del mercato:
+  in una fase di mercato mediamente caro, l'asse potrebbe comprimersi
+  verso punteggi bassi per la maggior parte dei titoli analizzati,
+  restando "onesto" ma perdendo potere discriminante fra i candidati
+  seguiti. `scripts/verify_axis_distribution.py` calcola la distribuzione
+  di Quality e Valuation su un campione diversificato di titoli per
+  verificarlo (va eseguito con accesso di rete reale, non nella sandbox
+  di sviluppo): se la distribuzione risulta compressa, la correzione
+  corretta NON è ammorbidire le soglie assolute, ma affiancare un secondo
+  livello di lettura — la posizione relativa del titolo nell'universo
+  portafoglio+preferiti dell'utente, etichettata distintamente dal
+  punteggio assoluto — non ancora implementato in attesa del risultato
+  della verifica.
 - I prospetti di bilancio dipendono dalla copertura Yahoo Finance:
   tipicamente **4 anni** di bilanci annuali gratuiti, non gli 8 idealmente
   usati da alcune metriche (percentile storico di valutazione,

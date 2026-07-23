@@ -61,6 +61,20 @@ SCORE_BANDS = [
 
 DATA_COMPLETENESS_THRESHOLD = 0.60
 
+# FIX4 v2.1 — peso di una metrica "stale" (derivata da un esercizio più
+# vecchio di quello delle altre voci della sua categoria) nella media di
+# categoria: strategia "(b) peso dimezzato" fra le due previste dalla
+# specifica v2.1 (l'altra, esclusione+ridistribuzione, è il caso limite
+# peso=0 di una media pesata generale — qui si usa sempre la stessa media
+# pesata, con questo peso invece di escludere il membro del tutto, per non
+# perdere l'informazione quando è l'unico dato disponibile in categoria).
+STALE_MEMBER_WEIGHT = 0.5
+
+# FIX4 v2.1 — oltre quanti mesi di ritardo rispetto alla metrica più
+# recente della stessa categoria una singola voce viene etichettata
+# "stale" (regola generale, non per titolo: un anno di bilancio).
+STALE_FIELD_LAG_MONTHS = 12
+
 # §5, NC-05: settori/archetipi dove l'R&D non capitalizzato è materiale.
 _ALTMAN_MANUFACTURING_LIKE_SECTORS = {"Industrials", "Basic Materials", "Energy", "Consumer Cyclical"}
 
@@ -138,6 +152,19 @@ def compute_core_metrics(symbol: str, info: dict | None = None, hist: dict | Non
     tax_s, pretax_s = hist.get("tax_provision"), hist.get("pretax_income")
     ta_s = hist.get("total_assets")
 
+    # FIX4 v2.1 — data dell'esercizio da cui deriva ciascuna metrica
+    # "puntuale" (non la data di download): serve a rilevare se una
+    # singola metrica arriva da un anno più vecchio delle altre della
+    # stessa categoria (campo assente negli anni recenti), non solo se
+    # l'intero bilancio è vecchio (quello lo copre già last_statement_date).
+    metric_dates: dict = {}
+
+    def _index_date(series):
+        if series is None or len(series) == 0:
+            return None
+        idx = series.index[-1]
+        return idx.date() if hasattr(idx, "date") else idx
+
     # --- ROIC (media pluriennale NOPAT/Invested Capital) ---
     metrics["roic"] = None
     if ebit_s is not None and debt_s is not None and equity_s is not None and len(ebit_s) > 0:
@@ -168,12 +195,14 @@ def compute_core_metrics(symbol: str, info: dict | None = None, hist: dict | Non
         gp_a, ta_a = gp_s.align(ta_s, join="inner")
         if not gp_a.empty and ta_a.iloc[-1]:
             metrics["gross_profits_to_assets"] = float(gp_a.iloc[-1] / ta_a.iloc[-1] * 100)
+            metric_dates["gross_profits_to_assets"] = _index_date(gp_a)
 
     # --- Margine operativo after-tax (§3.2) — livello corrente + mediana storica (NC-08) ---
     margins = finmod.compute_margins(hist)
     op_margin_s = margins.get("operating_margin")
     metrics["operating_margin_current"] = finmod._last(op_margin_s)
     metrics["operating_margin_median_8y"] = float(op_margin_s.median()) if op_margin_s is not None and len(op_margin_s) >= 3 else None
+    metric_dates["operating_margin_current"] = _index_date(op_margin_s)
 
     # --- FCF conversion ---
     fcf_s, ni_s = hist.get("free_cash_flow"), hist.get("net_income")
@@ -182,6 +211,7 @@ def compute_core_metrics(symbol: str, info: dict | None = None, hist: dict | Non
         f_a, n_a = fcf_s.align(ni_s, join="inner")
         if not f_a.empty and n_a.iloc[-1]:
             metrics["fcf_conversion"] = float(f_a.iloc[-1] / n_a.iloc[-1] * 100)
+            metric_dates["fcf_conversion"] = _index_date(f_a)
 
     # --- Accruals ratio (Sloan, formula cash-flow v2.0: (NI-CFO-CFI)/Attivo medio) ---
     cfo_s, cfi_s = hist.get("operating_cash_flow"), hist.get("cfi")
@@ -204,6 +234,8 @@ def compute_core_metrics(symbol: str, info: dict | None = None, hist: dict | Non
     metrics["net_debt_to_ebitda"] = finmod._last(ratios.get("net_debt_to_ebitda"))
     metrics["interest_coverage"] = finmod._last(ratios.get("interest_coverage"))
     metrics["net_debt"] = finmod._last(ratios.get("net_debt"))
+    metric_dates["net_debt_to_ebitda"] = _index_date(ratios.get("net_debt_to_ebitda"))
+    metric_dates["interest_coverage"] = _index_date(ratios.get("interest_coverage"))
 
     # --- EV/EBIT earnings yield (Greenblatt) ---
     ebit_latest = finmod._last(ebit_s) if ebit_s is not None else None
@@ -279,6 +311,25 @@ def compute_core_metrics(symbol: str, info: dict | None = None, hist: dict | Non
 
     # --- Data ultimo bilancio (NC-15) ---
     metrics["last_statement_date"] = rev_s.index[-1] if rev_s is not None and len(rev_s) else None
+
+    # FIX4 v2.1 — rileva le metriche "stale": una metrica il cui ultimo
+    # dato disponibile è più vecchio di STALE_FIELD_LAG_MONTHS rispetto
+    # all'esercizio più recente usato per le altre metriche (qui: i ricavi,
+    # quasi sempre la voce più aggiornata disponibile). Regola GENERALE,
+    # non legata a un titolo: capita tipicamente quando un campo di
+    # bilancio è assente negli anni più recenti e valorizzato solo in anni
+    # passati (es. una riga di dettaglio che Yahoo Finance ha smesso di
+    # riportare separatamente).
+    reference_date = _index_date(rev_s) if rev_s is not None else None
+    stale_fields: dict = {}
+    if reference_date is not None:
+        for key, as_of in metric_dates.items():
+            if as_of is None or metrics.get(key) is None:
+                continue
+            months_behind = (reference_date.year - as_of.year) * 12 + (reference_date.month - as_of.month)
+            if months_behind > STALE_FIELD_LAG_MONTHS:
+                stale_fields[key] = {"months_behind": months_behind, "year": as_of.year}
+    metrics["stale_fields"] = stale_fields
 
     # --- Trend earnings quality (NC-16): pendenza OI vs FCF su fino a 5 anni ---
     metrics["operating_income_trend_slope"] = None
@@ -419,16 +470,52 @@ def compute_altman(info: dict, hist: dict, sector: str | None) -> dict:
 # §3 — Asse QUALITY: sub-score assoluti per categoria + composito
 # ---------------------------------------------------------------------------
 
-def compute_quality_subscores(metrics: dict, bucket: str | None) -> tuple[dict, dict]:
+def compute_quality_subscores(metrics: dict, bucket: str | None, active_rules: set[str] | None = None,
+                               stale_fields: dict | None = None) -> tuple[dict, dict]:
+    active_rules = active_rules or set()
+    stale_fields = stale_fields or {}
+
+    # FIX4 v2.1: una metrica il cui valore deriva da un esercizio più
+    # vecchio di quello usato dalle altre voci della stessa categoria non
+    # deve contribuire con peso pieno alla media di categoria — strategia
+    # "peso dimezzato" (l'altra strategia prevista dalla spec, esclusione +
+    # redistribuzione, è matematicamente equivalente a un peso di 0 per il
+    # membro stale in una media pesata: qui usiamo un'unica media pesata
+    # generale, con peso 1.0 o STALE_MEMBER_WEIGHT a seconda del caso).
+    def _weighted_mean(members_with_keys: list[tuple[float | None, str]]) -> tuple[float | None, int]:
+        weighted_sum, weight_total, n_available = 0.0, 0.0, 0
+        for value, key in members_with_keys:
+            if value is None:
+                continue
+            n_available += 1
+            w = STALE_MEMBER_WEIGHT if key in stale_fields else 1.0
+            weighted_sum += value * w
+            weight_total += w
+        if weight_total <= 0:
+            return None, n_available
+        return weighted_sum / weight_total, n_available
+
     roic_s = sth.roic_score(bucket, metrics.get("roic"))
     gpa_s = sth.gross_profits_to_assets_score(metrics.get("gross_profits_to_assets"))
     margin_s = sth.operating_margin_score(bucket, metrics.get("operating_margin_current"))
     shy_s = _global_anchor(metrics.get("shareholder_yield"), _SHAREHOLDER_YIELD_ANCHORS)
-    profitability_members = [s for s in (roic_s, gpa_s, margin_s, shy_s) if s is not None]
+    profitability_score, n_profitability = _weighted_mean([
+        (roic_s, "roic"), (gpa_s, "gross_profits_to_assets"),
+        (margin_s, "operating_margin_current"), (shy_s, "shareholder_yield"),
+    ])
 
     fcf_conv_s = sth.fcf_conversion_score(metrics.get("fcf_conversion"))
     accruals_s = sth.accruals_score(metrics.get("accruals_ratio"))
-    earnings_quality_members = [s for s in (fcf_conv_s, accruals_s) if s is not None]
+    earnings_quality_score, n_earnings_quality = _weighted_mean([
+        (fcf_conv_s, "fcf_conversion"), (accruals_s, "accruals_ratio"),
+    ])
+    # FIX5 v2.1 — NC-07/NC-16: penalità REALMENTE applicata (non solo
+    # segnalata a testo) al sub-score qualità utili, prima del composito.
+    if earnings_quality_score is not None and (
+        "penalize_fcf_conversion_sbc" in active_rules or "penalize_earnings_quality_strong" in active_rules
+    ):
+        n_penalties = sum(r in active_rules for r in ("penalize_fcf_conversion_sbc", "penalize_earnings_quality_strong"))
+        earnings_quality_score = max(0.0, earnings_quality_score - cn.EARNINGS_QUALITY_PENALTY_POINTS * n_penalties)
 
     # Cassa netta (NC-11): punteggio massimo indipendentemente
     # dall'EBITDA, anche se Net Debt/EBITDA non è calcolabile.
@@ -439,24 +526,28 @@ def compute_quality_subscores(metrics: dict, bucket: str | None) -> tuple[dict, 
     else:
         nd_ebitda_s = sth.net_debt_ebitda_score(nd_ebitda_raw)
     coverage_s = sth.interest_coverage_score(metrics.get("interest_coverage"))
-    financial_strength_members = [s for s in (nd_ebitda_s, coverage_s) if s is not None]
+    financial_strength_score, n_financial_strength = _weighted_mean([
+        (nd_ebitda_s, "net_debt_to_ebitda"), (coverage_s, "interest_coverage"),
+    ])
 
     rev_cagr_s = _global_anchor(metrics.get("revenue_cagr"), _REVENUE_CAGR_ANCHORS)
     eps_cagr_s = _global_anchor(metrics.get("eps_cagr"), _EPS_CAGR_ANCHORS)
     growth_vol_s = _global_anchor(metrics.get("growth_volatility"), _GROWTH_VOLATILITY_ANCHORS)
-    growth_members = [s for s in (rev_cagr_s, eps_cagr_s, growth_vol_s) if s is not None]
+    growth_score, n_growth = _weighted_mean([
+        (rev_cagr_s, "revenue_cagr"), (eps_cagr_s, "eps_cagr"), (growth_vol_s, "growth_volatility"),
+    ])
 
     subscores = {
-        "profitability": sum(profitability_members) / len(profitability_members) if profitability_members else None,
-        "earnings_quality": sum(earnings_quality_members) / len(earnings_quality_members) if earnings_quality_members else None,
-        "financial_strength": sum(financial_strength_members) / len(financial_strength_members) if financial_strength_members else None,
-        "growth_quality": sum(growth_members) / len(growth_members) if growth_members else None,
+        "profitability": profitability_score,
+        "earnings_quality": earnings_quality_score,
+        "financial_strength": financial_strength_score,
+        "growth_quality": growth_score,
     }
     coverage = {
-        "profitability": len(profitability_members) / 4,
-        "earnings_quality": len(earnings_quality_members) / 2,
-        "financial_strength": len(financial_strength_members) / 2,
-        "growth_quality": len(growth_members) / 3,
+        "profitability": n_profitability / 4,
+        "earnings_quality": n_earnings_quality / 2,
+        "financial_strength": n_financial_strength / 2,
+        "growth_quality": n_growth / 3,
     }
     return subscores, coverage
 
@@ -594,15 +685,24 @@ def classify_matrix(quality_score: float | None, valuation_score: float | None) 
 # §7 — Modello di Confidenza/Incertezza
 # ---------------------------------------------------------------------------
 
-def compute_confidence(quality: dict, valuation: dict, lifecycle_profile: dict, stale_note: dict | None) -> dict:
+def compute_confidence(quality: dict, valuation: dict, lifecycle_profile: dict, overall_stale: bool,
+                        stale_fields: dict | None = None) -> dict:
     q_completeness = quality.get("completeness") or 0.0
     v_completeness = valuation.get("completeness") or 0.0
     data_completeness = (q_completeness + v_completeness) / 2 * 100
 
-    if stale_note is not None:
+    # FIX4 v2.1 — la componente staleness ora è GRADUATA invece che binaria
+    # 20/100: il bilancio intero vecchio (>15 mesi, `overall_stale`) resta
+    # la penalità più forte, ma anche un numero crescente di singole
+    # metriche stale la riduce proporzionalmente (mai sotto un pavimento
+    # di 20). `overall_stale` e `stale_fields` sono condizioni distinte:
+    # la prima riguarda l'intero bilancio, la seconda singole metriche.
+    stale_fields = stale_fields or {}
+    staleness = 100.0
+    if overall_stale:
         staleness = 20.0
-    else:
-        staleness = 100.0
+    elif stale_fields:
+        staleness = max(20.0, 100.0 - 15.0 * len(stale_fields))
 
     dickinson_stable = lifecycle_profile.get("dickinson_stable")
     dickinson_latest = lifecycle_profile.get("dickinson_latest")
@@ -625,15 +725,28 @@ def compute_confidence(quality: dict, valuation: dict, lifecycle_profile: dict, 
     explanation = []
     if data_completeness < 70:
         explanation.append(f"copertura dati parziale ({data_completeness:.0f}%)")
-    if staleness < 100:
+    if overall_stale:
         explanation.append("bilancio più vecchio di 15 mesi")
+    elif stale_fields:
+        explanation.append(f"{len(stale_fields)} metrica/e derivata/e da un esercizio più vecchio delle altre della stessa categoria")
     if business_model_fit < 100:
         explanation.append("segnale di ciclo di vita (Dickinson) instabile o non disponibile sugli anni recenti")
     if archetype_clarity < 90:
         explanation.append("archetipo assegnato per default, non da un trigger specifico")
 
+    # FIX v2.1-2 — vincolo di coerenza: il badge non può dichiararsi "Alta"
+    # se è presente almeno un fattore di riduzione elencato subito sotto
+    # (altrimenti il livello e la spiegazione si contraddicono a video).
+    # Non è un ricalcolo diverso del punteggio: il punteggio numerico
+    # resta quello sopra, solo l'ETICHETTA testuale viene declassata.
+    downgraded_for_consistency = False
+    if explanation and level == "Alta":
+        level = "Media"
+        downgraded_for_consistency = True
+
     return {
         "score": weighted, "level": level,
+        "downgraded_for_consistency": downgraded_for_consistency,
         "components": {
             "data_completeness": data_completeness, "data_staleness": staleness,
             "business_model_fit": business_model_fit, "archetype_clarity": archetype_clarity,
@@ -667,38 +780,86 @@ def build_thesis_text(result: dict) -> str:
 
 
 def build_bull_bear(result: dict) -> tuple[list[str], list[str]]:
-    bulls, bears = [], []
-    subs = result["quality"].get("subscores", {})
+    """Punti di forza / Punti di attenzione (v2.1, FIX5+FIX6).
+
+    FIX6 — due fonti, non più solo le Note Critiche: (a) Note Critiche
+    ATTIVE di tipo "penalty" (cn.NC_META: le uniche che riducono davvero un
+    punteggio); (b) categorie Quality, asse Quality e asse Valuation in
+    banda Debole/Scarso (<40) — prima un asse debole senza un trigger
+    diagnostico specifico non compariva mai, anche se era il fattore più
+    rilevante per la decisione. I Punti di forza sono simmetrici (>=70).
+
+    FIX5 — vincolo di esclusione reciproca: una categoria colpita da una
+    nota critica ATTIVA di tipo "penalty" non può comparire fra i Punti di
+    forza anche se il suo punteggio resta alto. Le note di tipo diverso da
+    "penalty" (suppression/reclass/note_only) non vengono duplicate qui:
+    restano visibili solo nella sezione dedicata Note Critiche, per non
+    mostrarle con un segno "negativo" che non hanno davvero (es. NC-04/
+    NC-05 segnalano una possibile SOTTOstima, non un difetto).
+
+    Entrambi gli elenchi sono ordinati per rilevanza decrescente (peso
+    della categoria nel composito Quality x distanza dalla soglia; gli
+    elementi senza un "peso" esplicito — Piotroski/Altman/Beneish/note —
+    usano una rilevanza di default fissa, documentata inline)."""
+    active_rules = result.get("active_rules", set())
+    critical_notes = result.get("critical_notes", [])
+    penalized_categories = set(cn.penalty_notes_by_category(critical_notes).keys())
+
+    bull_items: list[tuple[float, str]] = []
+    bear_items: list[tuple[float, str]] = []
+
+    quality = result["quality"]
+    subs = quality.get("subscores", {})
+    weights_used = quality.get("category_weights_used", {})
     for cat, sub in subs.items():
         if sub is None:
             continue
         label = CATEGORY_LABELS_IT[cat]
-        if sub >= 70:
-            bulls.append(f"{label}: {score_band_label(sub)} in assoluto (punteggio {sub:.0f})")
-        elif sub <= 39:
-            bears.append(f"{label}: {score_band_label(sub)} in assoluto (punteggio {sub:.0f})")
+        weight = weights_used.get(cat) or 10.0
+        if sub >= 70 and cat not in penalized_categories:
+            bull_items.append((weight * (sub - 70), f"{label}: {score_band_label(sub)} in assoluto (punteggio {sub:.0f})"))
+        elif sub < 40:
+            bear_items.append((weight * (40 - sub), f"{label}: {score_band_label(sub)} in assoluto (punteggio {sub:.0f})"))
+
+    # FIX6 — assi complessivi Quality/Valuation, non solo le singole categorie
+    q_score = quality.get("score")
+    if q_score is not None:
+        if q_score >= 70:
+            bull_items.append((100 * (q_score - 70), f"Quality complessivo: {score_band_label(q_score)} in assoluto (punteggio {q_score:.0f})"))
+        elif q_score < 40:
+            bear_items.append((100 * (40 - q_score), f"Quality complessivo: {score_band_label(q_score)} in assoluto (punteggio {q_score:.0f}) — asse rilevante per la decisione"))
+
+    v_score = result["valuation"].get("score")
+    if v_score is not None:
+        if v_score >= 70:
+            bull_items.append((100 * (v_score - 70), f"Valuation complessiva: {score_band_label(v_score)}, economica in assoluto (punteggio {v_score:.0f})"))
+        elif v_score < 40:
+            bear_items.append((100 * (40 - v_score), f"Valuation complessiva: {score_band_label(v_score)}, cara in assoluto (punteggio {v_score:.0f}) — asse rilevante per la decisione"))
 
     piotroski = result["piotroski"]
     if piotroski.get("score") is not None:
         if piotroski["score"] >= 7:
-            bulls.append(f"Piotroski F-Score {piotroski['score']}/9: solido su profittabilità, leva ed efficienza operativa")
+            bull_items.append((50.0, f"Piotroski F-Score {piotroski['score']}/9: solido su profittabilità, leva ed efficienza operativa"))
         elif piotroski["score"] <= 3:
-            bears.append(f"Piotroski F-Score {piotroski['score']}/9: segnali deboli su più fronti contabili")
+            bear_items.append((50.0, f"Piotroski F-Score {piotroski['score']}/9: segnali deboli su più fronti contabili"))
 
     altman = result["altman"]
     if altman.get("zone") == "safe":
-        bulls.append(f"Altman {altman['variant']}: zona sicura ({altman['z']:.2f})")
-    elif altman.get("zone") == "distress" and "suppress_distress_penalty" not in result.get("active_rules", set()):
-        bears.append(f"Altman {altman['variant']}: zona di distress ({altman['z']:.2f})")
+        bull_items.append((40.0, f"Altman {altman['variant']}: zona sicura ({altman['z']:.2f})"))
+    elif altman.get("zone") == "distress" and "suppress_distress_penalty" not in active_rules:
+        bear_items.append((60.0, f"Altman {altman['variant']}: zona di distress ({altman['z']:.2f})"))
 
     beneish = result.get("beneish", {})
     if beneish.get("zone") == "possibile_manipolatore":
-        bears.append(f"Beneish M-Score ({beneish['version']}) in zona di possibile manipolazione contabile: {beneish['m_score']:.2f}")
+        bear_items.append((60.0, f"Beneish M-Score ({beneish['version']}) in zona di possibile manipolazione contabile: {beneish['m_score']:.2f}"))
 
-    for note in result.get("critical_notes", []):
-        bears.append(f"[{note['code']}] {note['text']}")
+    for note in critical_notes:
+        if cn.NC_META.get(note["code"], {}).get("type") == "penalty":
+            bear_items.append((45.0, f"[{note['code']}] {note['text']}"))
 
-    return bulls, bears
+    bull_items.sort(key=lambda x: x[0], reverse=True)
+    bear_items.sort(key=lambda x: x[0], reverse=True)
+    return [text for _, text in bull_items], [text for _, text in bear_items]
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +907,8 @@ def build_fundamental_score(symbol: str, wacc: float | None = None, risk_free_pc
         "fcf_trend_slope": metrics.get("fcf_trend_slope"), "n_years_trend": metrics.get("n_years_trend"),
         "ppe_net": metrics.get("ppe_net"), "ppe_gross": metrics.get("ppe_gross"),
         "retained_earnings_to_ta": metrics.get("retained_earnings_to_ta"),
+        "stale_fields": metrics.get("stale_fields") or {},
+        "dickinson_overridden_by_securities": lifecycle_profile.get("dickinson_overridden_by_securities"),
         "altman": None,  # popolato sotto (serve prima calcolare Altman)
     }
 
@@ -757,7 +920,7 @@ def build_fundamental_score(symbol: str, wacc: float | None = None, risk_free_pc
     piotroski = compute_piotroski(hist, active_rules)
     beneish = ben.compute_m_score(hist)
 
-    subscores, coverage = compute_quality_subscores(metrics, bucket)
+    subscores, coverage = compute_quality_subscores(metrics, bucket, active_rules, metrics.get("stale_fields"))
     quality_composite = compute_quality_composite(
         subscores, lifecycle_profile["quality_weights"], cap_bucket, piotroski, altman, active_rules,
     )
@@ -774,7 +937,13 @@ def build_fundamental_score(symbol: str, wacc: float | None = None, risk_free_pc
         blended = (quality["score"] + valuation["score"]) / 2
 
     stale_note = next((n for n in critical_notes if n["code"] == "NC-15"), None)
-    confidence = compute_confidence(quality, valuation, lifecycle_profile, stale_note)
+    overall_stale = False
+    last_stmt = metrics.get("last_statement_date")
+    if last_stmt is not None:
+        d = last_stmt.date() if hasattr(last_stmt, "date") else last_stmt
+        months = (dt.date.today().year - d.year) * 12 + (dt.date.today().month - d.month)
+        overall_stale = months > cn.NC15_STALE_MONTHS
+    confidence = compute_confidence(quality, valuation, lifecycle_profile, overall_stale, metrics.get("stale_fields"))
 
     result = {
         "symbol": symbol, "excluded": False, "sector": sector, "bucket": bucket,
