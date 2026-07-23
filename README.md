@@ -26,8 +26,8 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `app.py` — bootstrap: password, poi la navigazione tra le 5 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
 - `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
-- `pages/analisi_fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
-- `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
+- `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
+- `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
 - `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
@@ -35,7 +35,6 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
-- `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
 - `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
 - `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
 - `.github/workflows/weekly_report.yml` — l'automazione del report periodico, gratuita
@@ -176,10 +175,13 @@ permanenti:
 - **Analisi Tecnica**: scegli l'orizzonte (breve/medio/lungo termine) in
   base a come usi quel titolo — trading di breve o investimento — e leggi
   il "perché" sotto il grafico prima di decidere.
-- **Analisi Fondamentale**: guarda il Fundamental Score insieme agli
-  anchor assoluti (ROIC vs WACC, bande di leva, zona Altman), non da solo
-  — è un ranking relativo al peer group di settore, non un giudizio
-  assoluto.
+- **Analisi Fondamentale**: guarda Quality e Valuation come due domande
+  separate — "è un buon business?" e "è a un prezzo interessante?" — e
+  usa la matrice 2x2 per capire il quadrante (wonderful company, quality
+  a caro prezzo, value trap, da evitare) prima di guardare il numero
+  unico secondario. Leggi sempre le eventuali Note Critiche: segnalano
+  quando una metrica standard rischia di ingannare su quel titolo
+  specifico.
 - **Fattori**: prima di comprare un titolo forte sui fondamentali, guarda
   il suo punteggio assoluto sui 5 fattori — un titolo di qualità ma caro
   (Value basso) o già corso molto (Momentum alto ma teso in Analisi
@@ -298,73 +300,108 @@ lungo periodo — così puoi cambiare la profondità dell'analisi (grafico,
 sezioni, sintesi e piano operativo insieme) in base al tipo di decisione,
 senza lasciare la pagina.
 
-## Analisi Fondamentale: come funziona il Fundamental Score
+## Analisi Fondamentale v2.0: come funziona
 
-La pagina **Analisi Fondamentale** calcola un **Fundamental Score (0-100)**
-per un singolo titolo, con la stessa struttura a tre sezioni delle altre
-pagine di analisi: **Portafoglio**, **Preferiti** e **Cerca**. Non è un
-modello di fair value — è uno strumento di screening comparativo, pensato
-per un orizzonte di medio termine, costruito seguendo una specifica
-tecnica (metriche, formule e pesi settoriali) fornita esplicitamente per
-questo modulo. Le banche/assicurazioni restano escluse: EBITDA, ROIC, EV
+La pagina **Analisi Fondamentale** calcola due punteggi **assoluti 0-100
+separati** — **Quality** e **Valuation** — per un singolo titolo, con la
+stessa struttura a tre sezioni delle altre pagine di analisi:
+**Portafoglio**, **Preferiti** e **Cerca**. Non è un modello di fair
+value — è uno strumento di screening, costruito seguendo una specifica
+tecnica v2.0 fornita esplicitamente per questo modulo ("Absolute
+Sector-Calibrated Scoring with Quality-Valuation Matrix and Critical
+Notes Layer"). Le banche/assicurazioni restano escluse: EBITDA, ROIC, EV
 e i coefficienti Piotroski/Altman non sono significativi per il loro
 modello di business.
 
-**Il principio guida è la parsimonia**: invece di un elenco lungo di
-multipli slegati tra loro, un nucleo di **8 metriche a bassa correlazione
-reciproca** (una per dimensione: creazione di valore, qualità degli
-utili, leva, valutazione, capital allocation) più due **badge standalone**
-con pedigree accademico (Piotroski F-Score, Altman Z-Score) — non
-soglie assolute, ma **percentili contro un peer group curato per
-settore** (15 titoli liquidi e rappresentativi per ciascuno degli 11
-settori di Yahoo Finance, in `src/sector_universe.py`), perché una stessa
-soglia di leva o di margine ha un significato diverso in settori diversi.
+**Perché due assi separati invece di un numero solo**: la letteratura
+accademica (Novy-Marx 2013 sul premio di profittabilità; Asness/Frazzini/
+Pedersen 2019 sul quality factor; la Magic Formula di Greenblatt, che usa
+esplicitamente due segnali ortogonali — ROIC per la qualità, EBIT/EV per
+il prezzo) tratta qualità e convenienza come **assi ortogonali**:
+fonderli in un solo numero distrugge l'informazione più utile per
+decidere ("buon business ma caro" è una situazione diversa da "business
+scadente ma a buon mercato", anche se il loro numero medio fosse
+identico). Il **blended number** (media dei due assi) resta visibile
+solo come dettaglio secondario, mai come segnale primario.
 
-- **Le 8 metriche core**: ROIC (medie pluriennali di EBIT e capitale
-  investito, per smorzare il rumore ciclico), gross-profits-to-assets
-  (Novy-Marx), FCF conversion (FCF/utile netto), accruals ratio (Sloan —
-  utili "di cassa" o solo contabili), debito netto/EBITDA, copertura
-  interessi, EV/EBIT earnings yield, shareholder yield (dividendi +
-  buyback netti su capitalizzazione) — più CAGR ricavi/EPS e volatilità
-  della crescita per la categoria "Qualità della crescita".
-- **Piotroski F-Score (0-9)**: 9 criteri binari su profittabilità, leva/
-  liquidità ed efficienza operativa, confrontando l'anno corrente con il
-  precedente (Piotroski, 2000) — mostrato come badge distinto, con il
-  dettaglio dei singoli criteri in un pannello a parte.
-- **Altman Z-Score / Z″**: predittore di distress finanziario, con la
-  variante corretta in base al settore (manifatturiero vs
-  non-manifatturiero). Se il titolo è in zona di distress, il punteggio
-  composito viene **limitato a 40** indipendentemente dagli altri punti
-  di forza — la difesa principale contro i "value trap".
-- **Percentile sector-relative**: ogni metrica viene winsorizzata al
-  5°/95° percentile del peer group e trasformata in un percentile 0-100
-  (orientato così che un valore più alto sia sempre "meglio"), poi
-  aggregata in 6 sub-score di categoria, sempre mostrati insieme al
-  punteggio finale — mai solo il numero.
-- **Pesi settore/cap-adjusted**: i 6 sub-score si combinano con pesi
-  diversi per 6 profili settoriali (Growth/Tech, Value/Industrial,
-  Utilities/Defensive, Consumer, Healthcare, Energy/Materials) e per
-  dimensione (mega/large, mid, small/micro — il peso del Piotroski sale
-  per le small cap, dove l'evidenza empirica è più forte). Se una
-  metrica o un'intera categoria manca, il suo peso si ridistribuisce
-  automaticamente sulle altre disponibili; sotto una copertura dati del
-  60% lo score non viene mostrato ("dati insufficienti") invece di
-  imputare un valore neutro che favorirebbe le aziende deboli.
-- **Flag testuali automatici**: FCF conversion in calo, buyback dichiarati
-  ma azioni in aumento (diluizione da SBC), P/E al 90° percentile della
-  propria storia, ROIC sotto il costo del capitale stimato (CAPM/WACC),
-  zona di distress Altman — spesso più utili del numero per decidere.
-- **Peer group con caching**: i fondamentali dei ~15 peer per settore
-  sono salvati in `data/fundamentals_cache.json` e riusati per ~90 giorni
-  (i fondamentali cambiano su base trimestrale), per non richiamare
-  Yahoo Finance su 15 titoli ad ogni singola analisi.
+**Perché "assoluto" qui significa "calibrato per settore", non "soglia
+universale"**: un ROIC del 12% è eccellente per una utility (il cui costo
+del capitale tipico è ~5-6%) e mediocre per un software (~9-10%) — le
+soglie sono tabelle di lookup pre-calcolate per **8 bucket di settore**
+(`src/sector_thresholds.py`, ispirate al dataset Damodaran NYU Stern e
+alle convenzioni di rating S&P/Moody's per la leva), **non un peer group
+costruito a runtime**: a differenza della versione precedente di questo
+modulo, il punteggio di un titolo non cambia in base a quali altri titoli
+segui, ed è quindi utilizzabile anche per un singolo titolo isolato.
+
+- **Archetipo operativo, non settore GICS grezzo** (`src/lifecycle.py`):
+  il ciclo di vita si deriva dai segni dei tre flussi di cassa (modello
+  Dickinson 2011: 8 combinazioni di OCF/CFI/CFF → Introduzione/Crescita/
+  Maturità/Declino/Shake-out) combinati con crescita ricavi, margini,
+  capex/ricavi, R&D/ricavi, payout e ROIC — non dal solo settore Yahoo
+  Finance. Sette archetipi (Hyper-growth, Growth, Mature compounder,
+  Mature cash cow, Cyclical, Turnaround, Capital-intensive/utility-like),
+  ciascuno con pesi diversi per le 4 categorie Quality: così un'azienda a
+  crescita lenta in un settore "Tech" non viene più penalizzata sul peso
+  crescita solo per l'etichetta di settore (bug-fix esplicito rispetto a
+  v1).
+- **Asse Quality (0-100)**: 4 categorie — Redditività e creazione di
+  valore (ROIC, gross-profits-to-assets, margine operativo, shareholder
+  yield), Qualità degli utili e cash flow (FCF conversion, accruals
+  ratio secondo Sloan), Solidità finanziaria (debito netto/EBITDA,
+  copertura interessi), Qualità della crescita (CAGR ricavi/EPS,
+  volatilità della crescita) — più Piotroski F-Score (0-9) a parte, con
+  peso più alto per le small cap. Ogni metrica si legge su una scala
+  fissa a 6 bande (Scarso/Debole/Sufficiente/Discreto/Buono/Eccellente),
+  mai relativa ad altri titoli.
+- **Asse Valuation (0-100, punteggio alto = economico)**: 4 componenti —
+  multipli assoluti calibrati per settore (EV/EBITDA, EV/Sales, P/E vs
+  bande di fair value), storia propria (percentile del P/E su una
+  finestra storica, idealmente 8 anni con fallback a 5), EV/EBIT earnings
+  yield (Greenblatt) confrontato col rendimento del Treasury 10 anni,
+  growth-adjusted (PEG dove il P/E è definito, altrimenti Rule of 40 per
+  le aziende hyper-growth in perdita).
+- **Matrice 2x2 Quality x Valuation**: quattro quadranti interpretativi —
+  *Wonderful company at a fair price* (quality alta, economico: candidato
+  forte), *Quality-at-a-price* (quality alta, caro: watchlist/pullback),
+  *Value trap potenziale* (quality bassa, economico: serve una tesi
+  specifica su un catalizzatore), *Evitare* (quality bassa, caro) — il
+  quadrante conta più del numero, per costruzione.
+- **Piotroski F-Score, Altman Z/Z″, Beneish M-Score**: Piotroski (9
+  criteri binari, 2000) con guard rail — il criterio sul current ratio si
+  neutralizza per modelli a working capital negativo (subscription),
+  i criteri variazionali si sospendono in presenza di one-off o M&A.
+  Altman Z (manifatturieri) o Z″ (tutti gli altri) per il rischio di
+  distress, soggetto anch'esso a un guard rail (buyback che erodono i
+  retained earnings possono generare un falso segnale di distress).
+  Beneish M-Score (1999, 8 variabili o versione ridotta a 5 se i dati
+  Yahoo Finance non bastano): un "early warning" statistico su possibili
+  manipolazioni contabili, non una prova di frode.
+- **Layer di Note Critiche selettivo** (`src/critical_notes.py`, 18
+  situazioni diagnosticabili — NC-01…NC-18): emettono un avviso testuale
+  SOLO quando un trigger preciso scatta sui dati del titolo — buyback che
+  distorce l'Altman Z, patrimonio netto negativo, ROE gonfiato dalla leva
+  (DuPont), goodwill che distorce il ROIC, R&D non capitalizzato,
+  leasing operativi, stock-based compensation, ciclicità al picco/
+  minimo, utili distorti da voci non ricorrenti, working capital
+  negativo come punto di forza (non debolezza) per i modelli subscription,
+  cassa netta, M&A recenti, azienda in perdita, settori REIT/Utility a
+  leva strutturale diversa, dati di bilancio non aggiornati, divergenza
+  tra utile operativo e free cash flow, effetti valutari, base di asset
+  molto ammortizzata. Selettivo per scelta: una nota su ogni metrica
+  distruggerebbe la fiducia nello strumento.
+- **Modello di Confidenza/Incertezza**: un punteggio 0-100 (Alta ≥75,
+  Media 50-74, Bassa <50) da completezza dati, freschezza dell'ultimo
+  bilancio, stabilità del segnale Dickinson su più anni e chiarezza
+  dell'archetipo assegnato — mostrato sempre accanto agli score, con la
+  spiegazione testuale di cosa l'ha abbassato.
 
 **Export Excel**: il bottone "Scarica Excel" in alto genera un workbook
-con sintesi (punteggio, badge, tesi, punti di forza/attenzione), le 8
-metriche core con percentile, categorie e pesi (con il punteggio
-composito come vera formula Excel ricalcolabile), bilancio annuale e
-l'intero peer group usato per i percentili — per verificare o archiviare
-l'analisi fuori dall'app.
+con sintesi (Quality, Valuation, quadrante, badge, tesi, punti di forza/
+attenzione), le metriche core per categoria, i pesi Quality (con il
+punteggio come vera formula Excel ricalcolabile), i 4 componenti
+Valuation, le Note Critiche scattate e il bilancio annuale — per
+verificare o archiviare l'analisi fuori dall'app.
 
 ## Fattori: come funziona
 
@@ -382,7 +419,7 @@ portafoglio o dai preferiti, ed è quindi un valore su cui puoi basarti
 da solo, anche per un singolo titolo isolato.
 
 - **Value**: earnings yield (E/P), FCF yield, EV/EBIT earnings yield
-  (riusato dal Fundamental Score), book-to-price — quattro angolazioni
+  (riusato dall'Analisi Fondamentale), book-to-price — quattro angolazioni
   diverse sulla stessa idea, per non dipendere da un solo multiplo.
   Ancore attorno ai multipli medi storici di lungo periodo del mercato
   azionario USA (es. earnings yield: 2% = punteggio 0, 6,5% ~ P/E 15 =
@@ -392,9 +429,9 @@ da solo, anche per un singolo titolo isolato.
   recente tende a mostrare un effetto di reversione di breve termine che
   contaminerebbe il segnale di momentum vero e proprio. Ancore: -30% =
   punteggio 0, 0% (piatto) = punteggio 50, +40% = punteggio 100.
-- **Quality**: collegato direttamente alle metriche core del Fundamental
-  Score — ROIC, gross-profits-to-assets, accruals ratio — cosi' i due
-  moduli restano coerenti tra loro invece di avere due definizioni
+- **Quality**: collegato direttamente alle metriche core dell'Analisi
+  Fondamentale — ROIC, gross-profits-to-assets, accruals ratio — cosi' i
+  due moduli restano coerenti tra loro invece di avere due definizioni
   diverse di "qualità". Ancore: ROIC 0%/10%/25% (0/50/100).
 - **Low Volatility**: volatilità storica a 12 mesi e beta — storicamente,
   i titoli meno volatili non hanno reso peggio di quelli più volatili a
@@ -418,7 +455,7 @@ fattore qui è **cross-sezionale e di medio termine** (quali titoli
 comprare, confrontando total return a 12-1 mesi tra titoli diversi) — un
 concetto diverso dagli **oscillatori di momentum** dell'Analisi Tecnica
 (RSI, Stocastico, MACD: quando entrare su un singolo titolo, nel breve
-termine). Un titolo forte su Fundamental Score e Fattori ma teso
+termine). Un titolo forte su Analisi Fondamentale e Fattori ma teso
 sull'Analisi Tecnica (ipercomprato, resistenza vicina) è un caso da
 "aspetta il pullback", non da comprare subito; forte su tutti e tre i
 moduli è un setup più pulito.
@@ -482,35 +519,52 @@ streamlit run app.py
   giustifica, ma quando è mostrato resta un punto di partenza tecnico:
   non tiene conto di commissioni, slippage, orari di mercato o della tua
   gestione del rischio complessiva.
-- Il **Fundamental Score** è un ranking **relativo** al peer group di
-  settore: in un settore uniformemente debole, uno score alto significa
-  "il migliore di un gruppo scarso", non un titolo oggettivamente solido
-  — per questo la pagina mostra sempre gli anchor assoluti (ROIC vs WACC,
-  bande di leva, zona Altman) accanto al percentile.
-- Piotroski e Altman sono **backward-looking** (bilanci già pubblicati):
-  sono filtri di rischio e sanity check, non segnali predittivi
-  standalone. I coefficienti Altman sono tarati su manifatturieri USA del
-  secolo scorso — per questo la pagina usa la variante Z″ per i settori
-  non-manifatturieri. L'edge del Piotroski F-Score si è indebolito sui
-  mega cap molto liquidi e coperti dagli analisti.
-- I pesi settoriali (profilo Growth/Tech, Value/Industrial, ecc.) sono un
-  **punto di partenza ragionato**, non calibrato con un backtest — la
-  specifica stessa lo dichiara esplicitamente come primo passo da
-  affinare nel tempo.
-- Il peer group per settore (`src/sector_universe.py`) è una selezione
-  curata di ~15 titoli liquidi per ciascuno degli 11 settori Yahoo
-  Finance, non un campionamento esaustivo di mercato: un provider dati a
-  pagamento con copertura completa per sotto-industria GICS darebbe
-  percentili più precisi. La mappatura da 11 settori a 6 profili di peso
-  ha due casi "misti" dichiarati (Communication Services e Real Estate).
-- I REIT (settore Real Estate) userebbero un profilo dedicato con FFO/
-  AFFO al posto di EPS/P/E: non ancora implementato, la pagina lo segnala
-  esplicitamente e usa il profilo generico più vicino come approssimazione.
-- I prospetti di bilancio dipendono dalla copertura Yahoo Finance: spesso
-  incompleti o assenti per titoli non statunitensi o a bassa
-  capitalizzazione. Sotto una copertura dati del 60% lo score non viene
-  mostrato ("dati insufficienti") invece di essere stimato su dati
-  incompleti.
+- Le soglie assolute per settore/archetipo di **Quality/Valuation**
+  (`src/sector_thresholds.py`) sono una mia calibrazione ragionata,
+  ispirata alle cifre citate nella specifica (dataset Damodaran, gennaio
+  2026) ma non l'esatto dataset — soprattutto per i settori non
+  esplicitamente coperti dalla specifica (Energy/Materials, Consumer
+  Cyclical, Communication Services), dove ho esteso gli ordini di
+  grandezza dei bucket vicini. Da versionare/aggiornare manualmente,
+  idealmente ogni gennaio quando Damodaran pubblica l'aggiornamento.
+- L'**archetipo operativo** (Dickinson + caratteristiche osservabili) è
+  un classificatore a regole con un ordine di priorità esplicito, mio,
+  per risolvere i casi in cui più trigger si sovrappongono — non
+  un'assegnazione garantita "corretta": la pagina mostra sempre il
+  motivo (quali trigger hanno determinato l'archetipo) per poterlo
+  verificare.
+- Piotroski, Altman e Beneish sono **backward-looking/forensic-
+  statistici** (bilanci già pubblicati): sono filtri di rischio e sanity
+  check, non segnali predittivi standalone né prove di frode. I
+  coefficienti Altman sono tarati su manifatturieri USA del secolo
+  scorso — per questo la pagina usa la variante Z″ per i settori
+  non-manifatturieri. Il Beneish M-Score richiede diverse voci di
+  bilancio (crediti, SG&A, PP&E lordo/netto, aliquota di ammortamento)
+  spesso incomplete su Yahoo Finance: se mancano, passa alla versione a
+  5 variabili o si sopprime del tutto, mai mostrato a metà.
+- I fattori quality/value pubblicati in letteratura accademica si sono
+  **indeboliti nel tempo** (McLean & Pontiff 2016: rendimenti fuori
+  campione il 26% più bassi, post-pubblicazione il 58% più bassi;
+  l'accruals anomaly di Sloan in particolare è documentata in declino) —
+  trattare Quality e Valuation come indicatori di robustezza
+  fondamentale, non come previsioni di rendimento.
+- I REIT e le Utility (settore Real Estate/Utilities) hanno una leva
+  strutturalmente diversa dagli altri settori: la Nota Critica NC-14 lo
+  segnala esplicitamente, ma un profilo dedicato con FFO/AFFO al posto di
+  EPS/P/E per i REIT non è ancora implementato — usa il bucket di soglie
+  Utility/capital-intensive come approssimazione.
+- Il **layer di Note Critiche** è selettivo per scelta (18 situazioni
+  diagnosticabili, non un controllo su ogni metrica): può quindi non
+  coprire situazioni reali non incluse nelle 18 regole — resta un
+  supplemento al giudizio, non un sostituto.
+- I prospetti di bilancio dipendono dalla copertura Yahoo Finance:
+  tipicamente **4 anni** di bilanci annuali gratuiti, non gli 8 idealmente
+  usati da alcune metriche (percentile storico di valutazione,
+  normalizzazione mid-cycle per i titoli ciclici) — dove i dati non
+  bastano lo score/percentile viene soppresso, mai stimato su dati
+  insufficienti, e il modello di confidenza segnala la riduzione. Sotto
+  una copertura dati del 60% lo score Quality o Valuation non viene
+  mostrato ("dati insufficienti").
 - Il target price e la raccomandazione aggregata degli analisti (mostrati
   come contesto on-demand, non nello score) sono un consensus reale ma non
   infallibile: riflettono le stime di chi copre il titolo in quel momento,

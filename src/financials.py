@@ -60,11 +60,30 @@ _BUYBACK_LABELS = ["Repurchase Of Capital Stock", "Common Stock Payments"]
 _ISSUANCE_LABELS = ["Issuance Of Capital Stock", "Common Stock Issuance"]
 _DIVIDENDS_PAID_LABELS = ["Cash Dividends Paid", "Common Stock Dividend Paid"]
 
+# --- Voci aggiuntive per Analisi Fondamentale v2.0 (Dickinson lifecycle,
+# Beneish M-Score, Note Critiche) — non servivano al Fundamental Score v1 ---
+_CFI_LABELS = ["Investing Cash Flow", "Total Cashflows From Investing Activities"]
+_CFF_LABELS = ["Financing Cash Flow", "Total Cash From Financing Activities"]
+_RECEIVABLES_LABELS = ["Receivables", "Accounts Receivable", "Net Receivables"]
+_SGA_LABELS = ["Selling General And Administration", "Selling General And Administrative Expenses"]
+_RD_LABELS = ["Research And Development"]
+_PPE_NET_LABELS = ["Net PPE", "Properties Plant And Equipment Net"]
+_PPE_GROSS_LABELS = ["Gross PPE", "Properties Plant And Equipment Gross"]
+_SECURITIES_LABELS = ["Other Short Term Investments", "Long Term Investments", "Investments And Advances"]
+_GOODWILL_LABELS = ["Goodwill", "Goodwill And Other Intangible Assets"]
+_DEFERRED_REVENUE_LABELS = ["Current Deferred Revenue", "Deferred Revenue", "Total Deferred Revenue"]
+_LEASE_LIABILITIES_LABELS = [
+    "Current Capital Lease Obligation", "Long Term Capital Lease Obligation",
+    "Capital Lease Obligations",
+]
+_SBC_LABELS = ["Stock Based Compensation"]
+
 # Metriche usate dal Fundamental Score (Piotroski, Altman, ROIC, ecc. — vedi
 # src/fundamental_score.py): estendono lo storico di bilancio di base con le
 # voci richieste dalla specifica che non servivano alla vecchia analisi
 # narrativa (patrimonio/attivo totale, debito a lungo termine separato dal
-# debito totale, utili non distribuiti, buyback/emissioni nette).
+# debito totale, utili non distribuiti, buyback/emissioni nette), più le
+# voci aggiunte per v2.0 (cash flow patterns, forensic, note critiche).
 METRIC_KEYS = [
     "revenue", "net_income", "gross_profit", "operating_income", "ebitda",
     "depreciation_amortization", "operating_cash_flow", "capex", "free_cash_flow",
@@ -72,6 +91,9 @@ METRIC_KEYS = [
     "current_liabilities", "interest_expense", "pretax_income", "tax_provision",
     "diluted_shares", "total_assets", "retained_earnings", "long_term_debt",
     "buyback", "stock_issuance", "dividends_paid",
+    "cfi", "cff", "receivables", "sga", "research_development",
+    "ppe_net", "ppe_gross", "securities", "goodwill", "deferred_revenue",
+    "lease_liabilities", "stock_based_compensation",
 ]
 
 CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "CHF": "CHF ", "JPY": "¥"}
@@ -189,9 +211,37 @@ def get_financial_history(symbol: str, freq: str = "annual") -> dict:
         out["buyback"] = _clean(_find_row(cash, _BUYBACK_LABELS))
         out["stock_issuance"] = _clean(_find_row(cash, _ISSUANCE_LABELS))
         out["dividends_paid"] = _clean(_find_row(cash, _DIVIDENDS_PAID_LABELS))
+
+        # --- v2.0: cash flow pattern (Dickinson), forensic (Beneish), note critiche ---
+        out["cfi"] = _clean(_find_row(cash, _CFI_LABELS))
+        out["cff"] = _clean(_find_row(cash, _CFF_LABELS))
+        out["receivables"] = _clean(_find_row(balance, _RECEIVABLES_LABELS))
+        out["sga"] = _clean(_find_row(income, _SGA_LABELS))
+        out["research_development"] = _clean(_find_row(income, _RD_LABELS))
+        out["ppe_net"] = _clean(_find_row(balance, _PPE_NET_LABELS))
+        out["ppe_gross"] = _clean(_find_row(balance, _PPE_GROSS_LABELS))
+        out["securities"] = _clean(_find_row(balance, _SECURITIES_LABELS))
+        out["goodwill"] = _clean(_find_row(balance, _GOODWILL_LABELS))
+        out["deferred_revenue"] = _clean(_find_row(balance, _DEFERRED_REVENUE_LABELS))
+        lease = _find_row(balance, _LEASE_LIABILITIES_LABELS)
+        out["lease_liabilities"] = _clean(lease)
+        out["stock_based_compensation"] = _clean(_find_row(cash, _SBC_LABELS))
     except Exception:
         pass
     return out
+
+
+def n_annual_periods(hist: dict) -> int:
+    """Quanti periodi annuali sono realmente disponibili per questo
+    titolo (yfinance espone tipicamente 4 anni di bilanci gratuiti, non
+    gli 8 anni ideali di §9 della specifica v2.0 — usato per decidere
+    se mostrare il percentile storico di valutazione e per il modello di
+    confidenza)."""
+    for key in ("revenue", "net_income", "total_assets"):
+        s = hist.get(key)
+        if s is not None:
+            return len(s)
+    return 0
 
 
 def compute_margins(hist: dict) -> dict:
@@ -368,16 +418,25 @@ def latest_and_yoy(series: pd.Series | None) -> dict:
     return {"latest": latest, "prev": prev, "yoy_pct": yoy}
 
 
-def historical_multiple_band(symbol: str, years: int = 3) -> dict | None:
+def historical_multiple_band(symbol: str, years: int = 8, min_years: int = 5) -> dict | None:
     """P/E "vero" storico dell'azienda: prezzo settimanale diviso per
     l'EPS diluito trailing-12-mesi (somma degli ultimi 4 trimestri),
-    sugli ultimi N anni. Permette di dire se il multiplo attuale è caro o
-    a buon mercato *rispetto alla storia del titolo stesso* — non solo
-    guardare il P/E di oggi in isolamento, come faceva la versione
-    precedente di questo modulo nonostante lo promettesse."""
+    sugli ultimi N anni (bug-fix §9.1 della specifica v2.0: finestra
+    3->8 anni, con fallback minimo 5 anni). Permette di dire se il
+    multiplo attuale è caro o a buon mercato *rispetto alla storia del
+    titolo stesso* — non solo guardare il P/E di oggi in isolamento.
+    yfinance espone tipicamente solo ~4-5 trimestri di EPS via i
+    prospetti contabili gratuiti: l'EPS storico più vecchio di quella
+    finestra resta quindi forward-filled dall'ultimo trimestre noto (il
+    prezzo varia comunque settimana per settimana, quindi il percentile
+    resta informativo ma va letto come un'approssimazione, non un vero
+    P/E storico ricostruito varianti). Torna None (percentile soppresso,
+    §9.1) se restano meno di `min_years` anni di prezzo utilizzabili."""
     try:
         price_hist = dp.get_history(symbol, period=f"{years}y", interval="1wk")
-        if price_hist is None or price_hist.empty or len(price_hist) < 20:
+        if price_hist is None or price_hist.empty or len(price_hist) < min_years * 40:
+            price_hist = dp.get_history(symbol, period=f"{min_years}y", interval="1wk")
+        if price_hist is None or price_hist.empty or len(price_hist) < min_years * 40:
             return None
         t = dp.get_ticker(symbol)
         eps_q = _clean(_find_row(t.quarterly_income_stmt, _EPS_LABELS))
@@ -400,10 +459,12 @@ def historical_multiple_band(symbol: str, years: int = 3) -> dict | None:
 
         current_pe = float(pe_series.iloc[-1])
         percentile = float((pe_series < current_pe).mean() * 100)
+        actual_years = round(len(pe_series) / 52, 1)
         return {
             "current": current_pe, "min": float(pe_series.min()), "median": float(pe_series.median()),
             "max": float(pe_series.max()), "percentile": percentile, "n_points": len(pe_series),
-            "years": years,
+            "years": actual_years,  # copertura prezzo REALE, non la finestra richiesta (bug-fix §9.3)
+            "eps_periods_available": len(eps_q),  # quanti trimestri di EPS reali (non forward-filled) sono noti
         }
     except Exception:
         return None

@@ -1,14 +1,16 @@
-"""Analisi Fondamentale: Fundamental Score (0-100) costruito secondo
-Specifica_Fundamental_Score_yfinance.md — un core parsimonioso di 8
-metriche a bassa correlazione reciproca (creazione di valore, qualità
-degli utili, leva, valutazione, capital allocation) più i badge Piotroski
-F-Score e Altman Z-Score, normalizzati a percentile contro un peer group
-curato per settore (src/sector_universe.py, con caching locale in
-src/fundamental_cache.py). Non è un modello di fair value: è uno
-strumento di screening comparabile su portafoglio, preferiti e ricerca
-libera, pensato per un orizzonte di medio termine. I settori finanziari
-(banche/assicurazioni) restano esclusi perché EBITDA/ROIC/EV/Piotroski/
-Altman non sono metriche significative per il loro modello di business."""
+"""Analisi Fondamentale v2.0: scoring ASSOLUTO calibrato per settore/
+archetipo (nessun peer group a runtime, src/sector_thresholds.py),
+separato in due assi ortogonali — Quality (redditività, qualità utili,
+solidità, crescita) e Valuation (multipli assoluti, storia propria,
+earnings yield vs risk-free, growth-adjusted) — presentati in una
+matrice 2x2 interpretativa, non fusi in un unico numero. L'archetipo
+operativo (Dickinson 2011 + caratteristiche osservabili, src/lifecycle.py)
+sostituisce il settore GICS grezzo per i pesi Quality. Un layer di Note
+Critiche selettivo (src/critical_notes.py) segnala le situazioni in cui
+le metriche standard ingannano (buyback, goodwill, R&D non capitalizzato,
+ciclicità, one-off, ecc.), e un modello di confidenza dichiara quanto
+fidarsi dello score in base a completezza/freschezza dei dati. Le
+banche/assicurazioni restano escluse."""
 import datetime as dt
 import os
 
@@ -21,61 +23,65 @@ from src import fundamental as fnd
 from src import fundamental_export as fexp
 from src import fundamental_score as fscore
 from src import github_sync
-from src import macro as mc
 from src import portfolio as pf
 from src import watchlist as wl
 from src.portfolio import CASH_CATEGORY
-from src.theme import apply_theme, badge, disclaimer
+from src.theme import (
+    ACCENT, BORDER, SURFACE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+    apply_theme, badge, disclaimer,
+)
 
 apply_theme()
 
 st.title("Analisi Fondamentale")
 st.caption(
-    "Fundamental Score (0-100): un nucleo di 8 metriche a bassa correlazione — creazione di valore, "
-    "qualità degli utili, leva, valutazione, capital allocation — più i badge Piotroski F-Score e "
-    "Altman Z-Score, sempre confrontati con un peer group di settore, non con soglie assolute. "
-    "Le banche/assicurazioni restano fuori: per loro questi ratio non sono significativi."
+    "Quality e Valuation: due punteggi assoluti 0-100 separati (scala fissa calibrata per settore e "
+    "archetipo operativo, non un confronto con altri titoli), presentati in una matrice 2x2 invece che "
+    "fusi in un unico numero. Le banche/assicurazioni restano fuori: per loro questi ratio non sono "
+    "significativi."
 )
 
 PORTFOLIO_PATH = "data/portfolio.csv"
 WATCHLIST_PATH = "data/watchlist.csv"
 
 BAND_BADGE_KIND = {
-    "Eccellente": "ok", "Solido": "ok", "Nella media": "warn",
-    "Debole": "bad", "Scarso": "bad", "n/d": "info",
+    "Eccellente": "ok", "Buono": "ok", "Discreto": "warn",
+    "Sufficiente": "warn", "Debole": "bad", "Scarso": "bad", "n/d": "info",
 }
+CONFIDENCE_BADGE_KIND = {"Alta": "ok", "Media": "warn", "Bassa": "bad"}
+
 METRIC_DISPLAY = {
-    "roic": ("ROIC", "pct"),
-    "gross_profits_to_assets": ("Gross profit / Attivo", "pct"),
-    "fcf_conversion": ("FCF conversion (FCF/Utile netto)", "pct"),
-    "accruals_ratio": ("Accruals ratio (Sloan)", "pct"),
-    "net_debt_to_ebitda": ("Debito netto / EBITDA", "ratio"),
-    "interest_coverage": ("Copertura interessi (EBIT/int.)", "ratio"),
-    "ev_ebit_yield": ("EV/EBIT earnings yield", "pct"),
-    "shareholder_yield": ("Shareholder yield", "pct"),
-    "revenue_cagr": ("CAGR ricavi", "pct"),
-    "eps_cagr": ("CAGR EPS", "pct"),
-    "growth_volatility": ("Volatilità crescita ricavi", "pct"),
+    "roic": ("ROIC", "pct"), "gross_profits_to_assets": ("Gross profit / Attivo", "pct"),
+    "operating_margin_current": ("Margine operativo", "pct"), "shareholder_yield": ("Shareholder yield", "pct"),
+    "fcf_conversion": ("FCF conversion", "pct"), "accruals_ratio": ("Accruals ratio (Sloan)", "pct"),
+    "net_debt_to_ebitda": ("Debito netto / EBITDA", "ratio"), "interest_coverage": ("Copertura interessi", "ratio"),
+    "revenue_cagr": ("CAGR ricavi", "pct"), "eps_cagr": ("CAGR EPS", "pct"), "growth_volatility": ("Volatilità crescita", "pct"),
 }
-
-
-def _percentile_badge_kind(pct: float | None) -> str:
-    if pct is None:
-        return "info"
-    return "ok" if pct >= 70 else ("bad" if pct <= 30 else "warn")
+CATEGORY_MEMBER_KEYS = {
+    "profitability": ["roic", "gross_profits_to_assets", "operating_margin_current", "shareholder_yield"],
+    "earnings_quality": ["fcf_conversion", "accruals_ratio"],
+    "financial_strength": ["net_debt_to_ebitda", "interest_coverage"],
+    "growth_quality": ["revenue_cagr", "eps_cagr", "growth_volatility"],
+}
+VALUATION_COMPONENT_LABELS = {
+    "sector_multiples": "Multipli assoluti (EV/EBITDA, EV/Sales, P/E) vs settore",
+    "own_history": "Storia propria (percentile P/E su finestra storica)",
+    "earnings_yield_vs_rf": "EV/EBIT earnings yield vs Treasury 10Y",
+    "growth_adjusted": "Growth-adjusted (PEG o Rule of 40)",
+}
 
 
 def _format_metric_value(key: str, value):
     kind = METRIC_DISPLAY.get(key, (key, "pct"))[1]
+    if value is None:
+        return "n/d"
     if kind == "pct":
         return finmod.format_pct(value, signed=True)
     return finmod.format_ratio(value)
 
 
-def _wacc_for(info: dict, hist: dict) -> float | None:
-    """Costo medio ponderato del capitale (CAPM/WACC), riusato da
-    src/fundamental.py — serve solo per il flag "ROIC sotto il WACC"
-    (§9), non per stimare un prezzo."""
+def _wacc_and_risk_free(info: dict, hist: dict) -> tuple[float | None, float | None]:
+    from src import macro as mc
     macro_snap = mc.get_macro_snapshot()
     risk_free = macro_snap.get("ten_year_yield")
     coe = fnd.cost_of_equity(info.get("beta"), risk_free)
@@ -84,12 +90,38 @@ def _wacc_for(info: dict, hist: dict) -> float | None:
     cod = fnd.cost_of_debt(interest_latest, debt_latest, risk_free)
     ratios = finmod.compute_ratios(hist)
     tax_rate = finmod._last(ratios.get("effective_tax_rate"))
-    return fnd.wacc(coe, cod, tax_rate, info.get("market_cap"), debt_latest)
+    w = fnd.wacc(coe, cod, tax_rate, info.get("market_cap"), debt_latest)
+    return w, risk_free
 
 
-# La tesi in una riga e i punti di forza/attenzione sono costruiti da
-# src.fundamental_score (build_thesis_text/build_bull_bear) cosi' pagina
-# ed export Excel restano sempre coerenti tra loro.
+def _render_matrix(matrix: dict | None, key_prefix: str):
+    quadrants = [
+        ("high", "cheap", "Alta Quality · Cheap", "wonderful"),
+        ("high", "expensive", "Alta Quality · Expensive", "quality_at_price"),
+        ("low", "cheap", "Bassa Quality · Cheap", "value_trap"),
+        ("low", "expensive", "Bassa Quality · Expensive", "avoid"),
+    ]
+    active_key = matrix.get("key") if matrix else None
+    cols = st.columns(2)
+    for i, (_, _, cell_label, cell_key) in enumerate(quadrants):
+        is_active = cell_key == active_key
+        border_color = ACCENT if is_active else BORDER
+        bg_color = SURFACE_RAISED if is_active else SURFACE
+        text_color = TEXT_PRIMARY if is_active else TEXT_MUTED
+        with cols[i % 2]:
+            st.markdown(
+                f"""<div style="border:1.5px solid {border_color};background:{bg_color};
+                border-radius:8px;padding:14px;margin-bottom:12px;min-height:88px;">
+                <div style="font-size:12px;color:{text_color};font-weight:600;">{cell_label}</div>
+                {f'<div style="font-size:12px;color:{ACCENT};margin-top:6px;">● titolo qui</div>' if is_active else ''}
+                </div>""",
+                unsafe_allow_html=True,
+            )
+    if matrix:
+        st.markdown(f"**{matrix['label']}**")
+        st.caption(matrix["action"])
+    else:
+        st.caption("Matrice non mostrabile: Quality o Valuation non calcolabili con i dati disponibili.")
 
 
 def render_fundamental_card(symbol: str, key_prefix: str):
@@ -104,90 +136,132 @@ def render_fundamental_card(symbol: str, key_prefix: str):
     c3.metric("Capitalizzazione", finmod.format_money(info.get("market_cap"), currency))
     c4.metric("P/E", f"{info.get('pe_ratio'):.1f}" if info.get("pe_ratio") else "n/d")
 
-    with st.spinner("Calcolo Fundamental Score (bilanci + peer group di settore)..."):
+    with st.spinner("Calcolo Quality/Valuation (soglie assolute per settore/archetipo)..."):
         hist = finmod.get_financial_history(symbol, freq="annual")
-        wacc_est = _wacc_for(info, hist)
-        result = fscore.build_fundamental_score(symbol, use_cache=True, sync_cache=False, wacc=wacc_est)
+        wacc_est, risk_free = _wacc_and_risk_free(info, hist)
+        result = fscore.build_fundamental_score(symbol, wacc=wacc_est, risk_free_pct=risk_free)
 
     if result.get("excluded"):
         st.warning(result["reason"])
         return
 
-    if result.get("needs_reit_override"):
-        st.caption(
-            "Settore Real Estate: la specifica prevede un profilo REIT dedicato (FFO/AFFO al posto "
-            "di EPS/P/E) non ancora implementato — qui usa il profilo generico Utilities/Defensive più "
-            "vicino, da considerare copertura parziale (Stage 2 del piano di implementazione)."
-        )
-
-    composite = result["composite"]
-    band = composite.get("band", "n/d")
+    quality, valuation, matrix = result["quality"], result["valuation"], result.get("matrix")
 
     excel_bytes = fexp.build_excel_report(symbol, info, price, result)
     st.download_button(
         "Scarica Excel", data=excel_bytes,
-        file_name=f"fundamental_score_{symbol}_{dt.date.today().isoformat()}.xlsx",
+        file_name=f"analisi_fondamentale_{symbol}_{dt.date.today().isoformat()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"{key_prefix}_download_excel",
     )
 
     st.markdown("#### Tesi in una riga")
+    st.markdown(fscore.build_thesis_text(result), unsafe_allow_html=True)
+
+    conf = result["confidence"]
+    confidence_badge_text = f"Affidabilità: {conf['level']}"
+    confidence_badge_html = badge(confidence_badge_text, CONFIDENCE_BADGE_KIND.get(conf["level"], "info"))
     st.markdown(
-        f"{badge(band, BAND_BADGE_KIND.get(band, 'info'))} {fscore.build_thesis_text(result, info)}",
+        f"{confidence_badge_html} "
+        f"&nbsp; archetipo: **{result['archetype_label']}** "
+        f"&nbsp; Dickinson: **{result['dickinson_latest_label']}**"
+        + ("" if result["dickinson_stable"] else " (segnale instabile negli anni disponibili)"),
         unsafe_allow_html=True,
     )
+    if conf["explanation"]:
+        st.caption("Fattori che riducono l'affidabilità: " + "; ".join(conf["explanation"]) + ".")
+    with st.expander("Perché questo archetipo?"):
+        st.caption(" · ".join(result["archetype_reasons"]))
+        st.caption(f"Bucket di soglie usato: {result.get('bucket_label', 'n/d')}.")
 
-    if composite.get("insufficient_data"):
-        st.info(composite.get("reason", "Copertura dati insufficiente per mostrare uno score."))
+    st.markdown("#### Quality e Valuation")
+    q1, q2 = st.columns(2)
+    with q1:
+        q_score = quality.get("score")
+        st.metric("Quality", f"{q_score:.0f}/100 · {fscore.score_band_label(q_score)}" if q_score is not None else "n/d")
+        if quality.get("insufficient_data"):
+            st.caption(quality.get("reason", "Dati insufficienti."))
+        if quality.get("altman_capped"):
+            st.caption("Limitato a 40 per zona di distress Altman (vedi Note Critiche se il segnale è ritenuto inaffidabile).")
+    with q2:
+        v_score = valuation.get("score")
+        st.metric("Valuation", f"{v_score:.0f}/100 · {fscore.score_band_label(v_score)}" if v_score is not None else "n/d")
+        st.caption("Punteggio alto = economico. " + (valuation.get("reason", "") if valuation.get("insufficient_data") else ""))
 
-    b1, b2 = st.columns(2)
+    if result["blended"] is not None:
+        st.caption(f"Numero unico secondario (media Quality/Valuation, da non usare come segnale primario): {result['blended']:.0f}/100.")
+
+    st.markdown("#### Matrice Quality x Valuation")
+    _render_matrix(matrix, key_prefix)
+
+    st.markdown("#### Prospettive per categoria (asse Quality)")
+    rows = []
+    weights_used = quality.get("category_weights_used", {})
+    for cat in fscore.CATEGORIES:
+        sub = quality["subscores"].get(cat)
+        rows.append({
+            "Categoria": fscore.CATEGORY_LABELS_IT[cat],
+            "Punteggio assoluto": f"{sub:.0f}" if sub is not None else "n/d",
+            "Banda": fscore.score_band_label(sub),
+            "Peso nel composito": f"{weights_used.get(cat, 0):.1f}%" if weights_used.get(cat) is not None else "n/d",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_categories")
+
+    with st.expander("Metriche core (per verificare i punteggi)"):
+        metrics = result["metrics"]
+        for cat in fscore.CATEGORIES:
+            st.markdown(f"**{fscore.CATEGORY_LABELS_IT[cat]}**")
+            cols = st.columns(4)
+            for i, key in enumerate(CATEGORY_MEMBER_KEYS[cat]):
+                label, _ = METRIC_DISPLAY[key]
+                with cols[i % 4]:
+                    st.metric(label, _format_metric_value(key, metrics.get(key)))
+
+    st.markdown("#### Componenti Valuation")
+    v_rows = []
+    for key, label in VALUATION_COMPONENT_LABELS.items():
+        val = valuation.get("components", {}).get(key)
+        v_rows.append({"Componente": label, "Punteggio": f"{val:.0f}" if val is not None else "n/d"})
+    st.dataframe(pd.DataFrame(v_rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_valuation_components")
+
+    st.markdown("#### Piotroski, Altman, Beneish")
+    b1, b2, b3 = st.columns(3)
     piotroski = result["piotroski"]
     with b1:
         if piotroski.get("score") is not None:
             st.metric("Piotroski F-Score", f"{piotroski['score']}/9")
         else:
             st.metric("Piotroski F-Score", "n/d")
+        if piotroski.get("suspended_variational"):
+            st.caption("Criteri variazionali sospesi (one-off/M&A rilevati).")
     with b2:
         altman = result["altman"]
         if altman.get("z") is not None:
             zone_label = {"safe": "Sicura", "grey": "Grigia", "distress": "Distress"}.get(altman["zone"], "n/d")
             zone_kind = {"safe": "ok", "grey": "warn", "distress": "bad"}.get(altman["zone"], "info")
-            st.markdown(
-                f"**Altman {altman['variant']}**: {altman['z']:.2f} — {badge(zone_label, zone_kind)}",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"**Altman {altman['variant']}**: {altman['z']:.2f}", unsafe_allow_html=True)
+            st.markdown(badge(zone_label, zone_kind), unsafe_allow_html=True)
         else:
-            st.markdown("**Altman Z**: n/d")
+            st.markdown("**Altman**: n/d")
+        if "suppress_distress_penalty" in result.get("active_rules", set()):
+            st.caption("Segnale di distress ritenuto non affidabile (vedi NC-01) e non applicato al punteggio.")
+    with b3:
+        beneish = result["beneish"]
+        if beneish.get("m_score") is not None:
+            zone_label = {"possibile_manipolatore": "Possibile manipolatore", "gray_zone": "Gray zone", "pulito": "Pulito"}.get(beneish["zone"], "n/d")
+            zone_kind = {"possibile_manipolatore": "bad", "gray_zone": "warn", "pulito": "ok"}.get(beneish["zone"], "info")
+            st.markdown(f"**Beneish M-Score** ({beneish['version']}): {beneish['m_score']:.2f}", unsafe_allow_html=True)
+            st.markdown(badge(zone_label, zone_kind), unsafe_allow_html=True)
+            st.caption("Early warning statistico, non prova di frode.")
+        else:
+            st.markdown("**Beneish M-Score**: n/d (dati insufficienti)")
 
-    st.markdown("#### Le 8 metriche core (+ crescita)")
-    st.caption("Percentile rispetto al peer group di settore (winsorizzato al 5°/95°) — non una soglia assoluta.")
-    metrics = result["metrics"]
-    percentiles = result["metric_percentiles"]
-    metric_keys = list(METRIC_DISPLAY.keys())
-    cols = st.columns(4)
-    for i, key in enumerate(metric_keys):
-        label, _ = METRIC_DISPLAY[key]
-        val = metrics.get(key)
-        pct = percentiles.get(key)
-        with cols[i % 4]:
-            st.metric(label, _format_metric_value(key, val) if val is not None else "n/d")
-            if pct is not None:
-                st.markdown(badge(f"{pct:.0f}° percentile", _percentile_badge_kind(pct)), unsafe_allow_html=True)
-            else:
-                st.caption("percentile n/d")
-
-    st.markdown("#### Prospettive per categoria")
-    rows = []
-    weights_used = composite.get("category_weights_used", {})
-    for cat in fscore.CATEGORIES:
-        sub = result["subscores"].get(cat)
-        rows.append({
-            "Categoria": fscore.CATEGORY_LABELS_IT[cat],
-            "Sub-score": f"{sub:.0f}" if sub is not None else "n/d",
-            "Banda": fscore.score_band_label(sub),
-            "Peso nel composito": f"{weights_used.get(cat, 0):.1f}%" if weights_used.get(cat) is not None else "n/d",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_categories")
+    critical_notes = result.get("critical_notes", [])
+    if critical_notes:
+        st.markdown("#### Note Critiche")
+        st.caption("Situazioni diagnosticabili in cui le metriche standard possono ingannare — mostrate solo quando il trigger scatta.")
+        for note in critical_notes:
+            st.markdown(f"{badge(note['code'], 'warn')} {note['text']}", unsafe_allow_html=True)
 
     bulls, bears = fscore.build_bull_bear(result)
     st.markdown("#### Punti di forza e di attenzione")
@@ -198,7 +272,7 @@ def render_fundamental_card(symbol: str, key_prefix: str):
             for b in bulls:
                 st.markdown(f"- {b}")
         else:
-            st.caption("Nessun punto di forza netto rispetto al peer group.")
+            st.caption("Nessun punto di forza netto in assoluto.")
     with bear_col:
         st.markdown("**Punti di attenzione**")
         if bears:
@@ -212,12 +286,13 @@ def render_fundamental_card(symbol: str, key_prefix: str):
         if pe_band:
             st.markdown(
                 f"P/E attuale {finmod.format_ratio(pe_band['current'], suffix='')} contro un range storico "
-                f"(ultimi {pe_band['years']} anni) tra {finmod.format_ratio(pe_band['min'], suffix='')} e "
-                f"{finmod.format_ratio(pe_band['max'], suffix='')} (mediana {finmod.format_ratio(pe_band['median'], suffix='')}): "
-                f"{pe_band['percentile']:.0f}° percentile della propria storia recente."
+                f"(copertura reale: {pe_band['years']} anni, {pe_band['eps_periods_available']} trimestri di EPS noti) tra "
+                f"{finmod.format_ratio(pe_band['min'], suffix='')} e {finmod.format_ratio(pe_band['max'], suffix='')} "
+                f"(mediana {finmod.format_ratio(pe_band['median'], suffix='')}): {pe_band['percentile']:.0f}° percentile "
+                "della propria storia recente."
             )
         else:
-            st.caption("Range storico del P/E non disponibile per questo titolo.")
+            st.caption("Range storico del P/E non disponibile per questo titolo (serve almeno 5 anni di storico prezzo).")
 
         target = info.get("target_mean_price")
         n_analysts = info.get("num_analyst_opinions")
@@ -232,10 +307,10 @@ def render_fundamental_card(symbol: str, key_prefix: str):
         else:
             st.caption("Nessun target price di analisti disponibile per questo titolo.")
 
-        if wacc_est is not None and metrics.get("roic") is not None:
+        if wacc_est is not None and result["metrics"].get("roic") is not None:
             st.caption(
-                f"ROIC (media pluriennale): {finmod.format_pct(metrics['roic'])} · "
-                f"WACC stimato (CAPM): {finmod.format_pct(wacc_est)}."
+                f"ROIC (media pluriennale): {finmod.format_pct(result['metrics']['roic'])} · "
+                f"WACC stimato (CAPM, beta del titolo): {finmod.format_pct(wacc_est)}."
             )
 
     with st.expander("Bilanci storici (grezzi)"):
@@ -244,6 +319,14 @@ def render_fundamental_card(symbol: str, key_prefix: str):
         table = finmod.to_display_table(hist, margins, ratios, currency)
         if not table.empty:
             st.dataframe(table, use_container_width=True, key=f"{key_prefix}_hist_table")
+            n_years = finmod.n_annual_periods(hist)
+            if n_years < 8:
+                st.caption(
+                    f"Yahoo Finance espone {n_years} anni di bilanci gratuiti per questo titolo — meno "
+                    "degli 8 anni idealmente usati da alcune metriche (es. normalizzazione mid-cycle, "
+                    "percentile storico di valutazione); dove non bastano, il dato viene soppresso "
+                    "invece di stimato, e la confidenza si riduce di conseguenza."
+                )
         else:
             st.info("Nessun prospetto di bilancio annuale disponibile per questo titolo su Yahoo Finance.")
 
@@ -317,14 +400,20 @@ with tab_search:
         render_fundamental_card(symbol, key_prefix="fa_search")
 
 disclaimer(
-    "Il Fundamental Score usa dati pubblici (Yahoo Finance via yfinance, libreria non ufficiale) e "
-    "regole di calcolo esplicite (Piotroski 2000, Altman Z, Novy-Marx, Sloan) — non è un modello "
-    "proprietario né dati di ricerca a pagamento, e non è un fair value: è uno strumento di screening "
-    "comparativo su un peer group curato per settore. Il ranking a percentile è relativo: in un "
-    "settore uniformemente debole, uno score alto significa \"il migliore di un gruppo scarso\", non "
-    "un titolo oggettivamente solido — guardare sempre gli anchor assoluti (ROIC vs WACC, bande di "
-    "leva, bande Altman) accanto al percentile. Altman e Piotroski sono backward-looking (bilanci già "
-    "pubblicati): sono filtri di rischio, non segnali predittivi standalone. I pesi settoriali sono un "
-    "punto di partenza ragionato, non calibrato con un backtest. Non è consulenza finanziaria "
-    "personalizzata né una raccomandazione operativa."
+    "L'Analisi Fondamentale v2.0 usa dati pubblici (Yahoo Finance via yfinance) e uno scoring ASSOLUTO "
+    "calibrato per settore/archetipo (soglie ispirate al dataset Damodaran e alle convenzioni di rating "
+    "S&P/Moody's, non un peer group costruito a runtime): un punteggio alto è oggettivamente buono, non "
+    "\"il migliore di un gruppo scarso\". Quality e Valuation sono assi ortogonali per costruzione "
+    "(Novy-Marx 2013, Asness/Frazzini/Pedersen 2019): mostrarli fusi in un solo numero distruggerebbe "
+    "informazione decisionale, per questo il blended number resta solo un dettaglio secondario. Le Note "
+    "Critiche segnalano solo le situazioni diagnosticabili con regole precise, non ogni metrica. "
+    "Piotroski, Altman e Beneish sono backward-looking e forensic-statistici, non prove né previsioni. "
+    "I fattori quality/value pubblicati in letteratura si sono indeboliti nel tempo (McLean & Pontiff "
+    "2016: rendimenti out-of-sample il 26% più bassi, post-pubblicazione il 58% più bassi): trattare "
+    "questi punteggi come indicatori di robustezza fondamentale, non come previsioni di rendimento. Le "
+    "soglie sono scelte ragionate, non calibrate con un backtest sui titoli in portafoglio — e Yahoo "
+    "Finance offre tipicamente 4 anni di bilanci, non gli 8 idealmente usati da alcune metriche: dove i "
+    "dati non bastano lo strumento lo dichiara e riduce la confidenza, non inventa un valore. Non è "
+    "consulenza finanziaria personalizzata né una raccomandazione operativa: nessuna analisi quantitativa "
+    "sostituisce il giudizio su fattori qualitativi (moat, management, contesto macro)."
 )
