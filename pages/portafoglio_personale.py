@@ -183,13 +183,22 @@ col_pie, col_compare = st.columns([1, 1.2])
 with col_pie:
     st.subheader("Allocazione")
     if enriched["market_value"].notna().any():
+        has_category = "category" in enriched.columns
+        alloc_view = st.segmented_control(
+            "Vista allocazione", ["Per categoria", "Per titolo"],
+            default="Per categoria", key="alloc_view", label_visibility="collapsed",
+        ) or "Per categoria"
+
+        names_col = "ticker" if alloc_view == "Per titolo" else ("category" if has_category else "ticker")
         fig = px.pie(
-            enriched, values="market_value", names="category" if "category" in enriched.columns else "ticker",
-            hole=0.55, color="category" if "category" in enriched.columns else None,
-            color_discrete_map=CATEGORY_COLORS if "category" in enriched.columns else None,
+            enriched, values="market_value", names=names_col,
+            hole=0.55, color="category" if has_category else None,
+            color_discrete_map=CATEGORY_COLORS if has_category else None,
         )
+        if alloc_view == "Per titolo":
+            fig.update_traces(hovertemplate="%{label}<br>%{value:,.2f} · %{percent}<extra></extra>")
         fig.update_layout(showlegend=True, margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="alloc_pie_chart")
     else:
         st.info("Nessun prezzo disponibile per calcolare l'allocazione.")
 
