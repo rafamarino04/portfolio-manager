@@ -27,7 +27,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
 - `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `pages/analisi_fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
-- `pages/fattori.py` — classifica i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con percentile e radar a 5 assi contro un universo di confronto (portafoglio + preferiti + peer di settore), non contro il proprio grafico: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
+- `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
 - `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
@@ -36,7 +36,6 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
 - `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
-- `data/factor_cache.json` — stessa logica di cache, file separato, per le metriche grezze usate dalla pagina Fattori (creato al primo utilizzo della pagina Fattori)
 - `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
 - `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
 - `.github/workflows/weekly_report.yml` — l'automazione del report periodico, gratuita
@@ -182,9 +181,9 @@ permanenti:
   — è un ranking relativo al peer group di settore, non un giudizio
   assoluto.
 - **Fattori**: prima di comprare un titolo forte sui fondamentali, guarda
-  dove si posiziona sui 5 fattori rispetto agli altri titoli che segui —
-  un titolo di qualità ma caro (Value basso) o già corso molto (Momentum
-  alto ma teso in Analisi Tecnica) merita un timing più attento.
+  il suo punteggio assoluto sui 5 fattori — un titolo di qualità ma caro
+  (Value basso) o già corso molto (Momentum alto ma teso in Analisi
+  Tecnica) merita un timing più attento.
 
 ## Analisi Tecnica: come funziona
 
@@ -369,41 +368,50 @@ l'analisi fuori dall'app.
 
 ## Fattori: come funziona
 
-La pagina **Fattori** classifica i titoli in Portafoglio e Preferiti su
-**5 fattori** con un premio storico documentato in letteratura accademica
+La pagina **Fattori** valuta i titoli in Portafoglio e Preferiti su **5
+fattori** con un premio storico documentato in letteratura accademica
 (Fama-French, Novy-Marx, Asness/AQR, Jegadeesh-Titman): **Value**,
-**Momentum**, **Quality**, **Low Volatility**, **Size**. A differenza
-delle altre due pagine di analisi, qui il confronto non è mai col
-passato del titolo stesso, ma con un **universo** di altri titoli
-(portafoglio + preferiti + peer di settore, opzionali): il percentile
-dice "dove sei rispetto agli altri", non "sei a buon mercato in
-assoluto".
+**Momentum**, **Quality**, **Low Volatility**, **Size**. A differenza di
+una prima versione (percentile contro un universo di portafoglio +
+preferiti + peer di settore), ogni fattore è ora un punteggio
+**assoluto 0-100 su una scala fissa**: la metrica grezza si confronta
+con tre ancore economicamente ragionevoli (0 = scarso, 50 = nella
+media, 100 = eccellente), non con gli altri titoli che segui — il
+punteggio di un titolo non cambia se aggiungi o togli altri titoli dal
+portafoglio o dai preferiti, ed è quindi un valore su cui puoi basarti
+da solo, anche per un singolo titolo isolato.
 
 - **Value**: earnings yield (E/P), FCF yield, EV/EBIT earnings yield
   (riusato dal Fundamental Score), book-to-price — quattro angolazioni
   diverse sulla stessa idea, per non dipendere da un solo multiplo.
+  Ancore attorno ai multipli medi storici di lungo periodo del mercato
+  azionario USA (es. earnings yield: 2% = punteggio 0, 6,5% ~ P/E 15 =
+  punteggio 50, 12% = punteggio 100).
 - **Momentum**: total return a 12 mesi **escludendo l'ultimo mese**
   (12-1) — la convenzione standard in letteratura, perché il mese più
   recente tende a mostrare un effetto di reversione di breve termine che
-  contaminerebbe il segnale di momentum vero e proprio.
+  contaminerebbe il segnale di momentum vero e proprio. Ancore: -30% =
+  punteggio 0, 0% (piatto) = punteggio 50, +40% = punteggio 100.
 - **Quality**: collegato direttamente alle metriche core del Fundamental
   Score — ROIC, gross-profits-to-assets, accruals ratio — cosi' i due
   moduli restano coerenti tra loro invece di avere due definizioni
-  diverse di "qualità".
+  diverse di "qualità". Ancore: ROIC 0%/10%/25% (0/50/100).
 - **Low Volatility**: volatilità storica a 12 mesi e beta — storicamente,
   i titoli meno volatili non hanno reso peggio di quelli più volatili a
   parità di rischio atteso, il cosiddetto "low-volatility anomaly".
-- **Size**: capitalizzazione di mercato, con percentile più alto per
-  cap **più piccola** — il premio storico delle small cap, per quanto
-  meno robusto negli ultimi decenni rispetto agli anni '80-'90.
+  Ancore: volatilità 55%/30%/12% e beta 2,0/1,0/0,4 (0/50/100).
+- **Size**: capitalizzazione di mercato su scala logaritmica, con
+  punteggio più alto per cap **più piccola** — il premio storico delle
+  small cap, per quanto meno robusto negli ultimi decenni rispetto agli
+  anni '80-'90. Ancore: 200 Mld $ = punteggio 0, 10 Mld $ = punteggio
+  50, 0,5 Mld $ = punteggio 100.
 
-Ogni fattore diventa un **percentile 0-100** (winsorizzato al 5°/95°,
-stesso metodo del Fundamental Score) contro l'universo scelto, poi
-aggregato in un **composite** con un profilo di peso a scelta —
-Equal-weight di default, o un tilt dichiarato verso Value/Momentum/
-Quality. Per ogni titolo trovi un **radar a 5 assi** e le metriche
-grezze in un pannello a parte, per verificare da dove viene ogni
-percentile.
+I punteggi si aggregano in un **composite** con un profilo di peso a
+scelta — Equal-weight di default, o un tilt dichiarato verso
+Value/Momentum/Quality (il peso si ridistribuisce sui fattori
+disponibili se qualcuno manca per dati insufficienti). Per ogni titolo
+trovi un **radar a 5 assi** e le metriche grezze in un pannello a
+parte, per verificare da dove viene ogni punteggio.
 
 **Distinzione cruciale, ribadita anche nell'interfaccia**: il Momentum-
 fattore qui è **cross-sezionale e di medio termine** (quali titoli
@@ -526,10 +534,12 @@ streamlit run app.py
   risupera) genera una nuova email, correttamente.
 - I **Fattori** sono premi statistici di lungo periodo, non garanzie:
   possono sottoperformare per anni interi (il value 2010-2020 è
-  l'esempio classico) — un percentile alto oggi non è una promessa di
-  rendimento futuro. Il percentile dipende sempre dall'universo di
-  confronto scelto: con pochi titoli in Portafoglio/Preferiti e i peer
-  di settore disattivati, l'universo può essere troppo piccolo per un
-  percentile robusto. Il composite ridistribuisce i pesi sui fattori
-  disponibili se qualcuno manca per dati insufficienti, invece di
-  imputare un valore neutro.
+  l'esempio classico) — un punteggio alto oggi non è una promessa di
+  rendimento futuro. Il punteggio è assoluto (ancore fisse scelte da
+  me su basi economiche/statistiche ragionevoli, non calibrate con un
+  backtest, dichiarate nel disclaimer della pagina), non relativo a un
+  universo di confronto: è stabile nel tempo, ma le ancore restano una
+  scelta soggettiva — un multiplo "medio" ragionevole oggi potrebbe non
+  esserlo tra qualche anno se il mercato si rivaluta strutturalmente. Il
+  composite ridistribuisce i pesi sui fattori disponibili se qualcuno
+  manca per dati insufficienti, invece di imputare un valore neutro.

@@ -1,6 +1,5 @@
-"""Fattori (§12 di Specifica_Analisi_Tecnica_Murphy.md): non il grafico
-del singolo titolo, ma la classificazione dei titoli in portafoglio e
-preferiti rispetto a un universo (+ peer di settore) sui 5 fattori
+"""Fattori: non il grafico del singolo titolo, ma una valutazione assoluta
+(0-100, scala fissa) dei titoli in portafoglio e preferiti sui 5 fattori
 accademici con premio storico documentato — Value, Momentum, Quality,
 Low Volatility, Size. Il ponte tra Analisi Tecnica (timing) e
 Fundamental Score (qualità/valore di medio termine): selezione con
@@ -22,16 +21,17 @@ apply_theme()
 
 st.title("Fattori")
 st.caption(
-    "Value, Momentum, Quality, Low Volatility, Size: dove si posiziona ogni titolo rispetto a un "
-    "universo di confronto (portafoglio + preferiti + peer di settore), non rispetto al proprio "
-    "grafico. Serve alla **selezione** dei titoli, non al timing."
+    "Value, Momentum, Quality, Low Volatility, Size: un punteggio assoluto 0-100 per ogni titolo, "
+    "su una scala fissa — non un confronto con altri titoli. Serve alla **selezione** dei titoli, "
+    "non al timing."
 )
 st.info(
-    "**Da non confondere**: il *Momentum-fattore* qui è cross-sezionale e di medio termine (total "
-    "return a 12-1 mesi tra titoli diversi — quali titoli comprare) — è un concetto diverso dagli "
-    "*oscillatori di momentum* dell'Analisi Tecnica (RSI/Stocastico/MACD, rate-of-change di breve sul "
-    "singolo titolo — quando entrare). Un titolo forte su fondamentali e fattori ma teso sulla tecnica "
-    "(ipercomprato, resistenza vicina) è un 'aspetta il pullback'; forte su tutti e tre è un setup più pulito."
+    "**Da non confondere**: il *Momentum-fattore* qui è di medio termine (total return a 12-1 mesi "
+    "sullo stesso titolo — quanto è stato forte il suo trend nell'ultimo anno) — è un concetto "
+    "diverso dagli *oscillatori di momentum* dell'Analisi Tecnica (RSI/Stocastico/MACD, rate-of-change "
+    "di breve sul singolo titolo — quando entrare). Un titolo forte su fondamentali e fattori ma teso "
+    "sulla tecnica (ipercomprato, resistenza vicina) è un 'aspetta il pullback'; forte su tutti e tre "
+    "è un setup più pulito."
 )
 
 PORTFOLIO_PATH = "data/portfolio.csv"
@@ -51,7 +51,7 @@ def _build_radar(radar: dict, color: str = NAVY) -> go.Figure:
     return fig
 
 
-# --- Universo: titoli in portafoglio + preferiti ---
+# --- Titoli in portafoglio + preferiti ---
 positions = pd.DataFrame()
 if os.path.exists(PORTFOLIO_PATH):
     positions = pf.load_portfolio(PORTFOLIO_PATH)
@@ -67,7 +67,7 @@ target_tickers = sorted(set(portfolio_tickers) | set(watchlist_tickers))
 if not target_tickers:
     st.info(
         "Nessun titolo in portafoglio o nei preferiti: aggiungine dal Registro Transazioni o "
-        "dall'Analisi Tecnica per vedere qui la loro classificazione sui fattori."
+        "dall'Analisi Tecnica per vedere qui la loro valutazione sui fattori."
     )
     st.stop()
 
@@ -77,25 +77,13 @@ with c1:
 with c2:
     weight_profile = st.selectbox("Profilo di peso", list(fac.TILT_PROFILES.keys()), key="factor_profile")
 
-include_peers = st.checkbox("Includi peer di settore nell'universo di confronto (consigliato)",
-                             value=True, key="factor_include_peers")
+with st.spinner("Calcolo fattori..."):
+    report = fac.build_factor_report(target_tickers, weight_profile=weight_profile)
 
-with st.spinner("Calcolo fattori sull'universo di confronto..."):
-    sectors = []
-    if include_peers:
-        for t in target_tickers:
-            sec = dp.get_info(t).get("sector")
-            if sec:
-                sectors.append(sec)
-    universe_tickers = fac.build_universe(portfolio_tickers, watchlist_tickers,
-                                           sectors=sectors, include_sector_peers=include_peers)
-    report = fac.build_factor_report(target_tickers, universe_tickers,
-                                      weight_profile=weight_profile, use_cache=True, sync_cache=False)
-
-st.caption(f"Universo di confronto: {report['universe_size']} titoli · profilo pesi: {report['weight_profile']}.")
+st.caption(f"Profilo pesi: {report['weight_profile']}. Punteggi assoluti (scala fissa, non relativi tra loro).")
 
 st.markdown("### Ranking")
-st.caption("Percentile 0-100 per fattore (più alto = meglio, sempre relativo a questo universo) + composite pesato.")
+st.caption("Punteggio assoluto 0-100 per fattore (scala fissa, vedi disclaimer) + composite pesato.")
 rows = []
 for r in report["ranking"]:
     rows.append({
@@ -107,22 +95,22 @@ st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key=
 
 st.markdown("### Dettaglio per titolo")
 chosen = st.selectbox("Titolo", target_tickers, key="factor_detail_ticker")
-percentiles = report["percentiles"].get(chosen, {})
+scores = report["scores"].get(chosen, {})
 metrics = report["metrics"].get(chosen, {})
 composite = report["composites"].get(chosen)
 
 d1, d2 = st.columns([1, 1])
 with d1:
-    radar = fac.radar_data(chosen, report["percentiles"])
+    radar = fac.radar_data(chosen, report["scores"])
     st.plotly_chart(_build_radar(radar, GOLD if (composite or 0) >= 60 else NAVY),
                      use_container_width=True, key="factor_radar_chart")
 with d2:
-    st.metric("Composite factor score", f"{composite:.0f}/100" if composite is not None else "n/d")
+    st.metric("Composite factor score", f"{composite:.0f}/100 · {fac.score_band_label(composite)}" if composite is not None else "n/d")
     for f in fac.FACTORS:
-        p = percentiles.get(f)
-        st.metric(fac.FACTOR_LABELS_IT[f], f"{p:.0f}° percentile" if p is not None else "n/d")
+        s = scores.get(f)
+        st.metric(fac.FACTOR_LABELS_IT[f], f"{s:.0f}/100" if s is not None else "n/d")
 
-with st.expander("Metriche grezze (per verificare i percentili)"):
+with st.expander("Metriche grezze (per verificare i punteggi)"):
     label_map = {
         "earnings_yield": "Earnings yield (E/P) %", "fcf_yield": "FCF yield %",
         "ev_ebit_yield": "EV/EBIT yield %", "book_to_price": "Book-to-price %",
@@ -138,8 +126,9 @@ with st.expander("Metriche grezze (per verificare i percentili)"):
 disclaimer(
     "I fattori sono premi statistici di lungo periodo documentati in letteratura accademica (Fama-French, "
     "Novy-Marx, Asness/AQR, Jegadeesh-Titman) — non garanzie: possono sottoperformare per anni (il value "
-    "2010-2020 è l'esempio classico). Il percentile è sempre relativo all'universo di confronto scelto: "
-    "cambiando l'universo (es. escludendo i peer di settore) i percentili cambiano. Il composite è una "
-    "media pesata dei fattori disponibili, ridistribuita se qualcuno manca per dati insufficienti. Non è "
-    "consulenza finanziaria personalizzata né un segnale operativo."
+    "2010-2020 è l'esempio classico). Ogni punteggio è ASSOLUTO: una scala fissa a tre ancore (0/50/100) "
+    "scelta su basi economiche/statistiche ragionevoli, non calibrata con un backtest e non relativa a "
+    "nessun gruppo di titoli — non cambia se aggiungi o togli titoli dal portafoglio o dai preferiti. "
+    "Il composite è una media pesata dei fattori disponibili, ridistribuita se qualcuno manca per dati "
+    "insufficienti. Non è consulenza finanziaria personalizzata né un segnale operativo."
 )
