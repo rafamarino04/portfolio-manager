@@ -31,6 +31,11 @@ def load_transactions(path: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date", "ticker", "type"])
     df["ticker"] = df["ticker"].astype(str).str.strip()
+    # Colonne testuali: forzate a object/stringa anche se una colonna e'
+    # interamente vuota (altrimenti pandas la legge come float64 e
+    # st.data_editor rifiuta di editarla come TextColumn).
+    for col in ("currency", "category", "note"):
+        df[col] = df[col].apply(lambda x: None if pd.isna(x) else str(x))
     return df.sort_values("date")[COLUMNS]
 
 

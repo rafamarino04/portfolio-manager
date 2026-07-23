@@ -15,24 +15,19 @@ from src import data_provider as dp
 from src import factors as fac
 from src import portfolio as pf
 from src import watchlist as wl
-from src.auth import check_password
 from src.portfolio import CASH_CATEGORY
 from src.theme import GOLD, NAVY, apply_theme, disclaimer
 
-st.set_page_config(page_title="Fattori", page_icon="\U0001F9ED", layout="wide")
 apply_theme()
 
-if not check_password():
-    st.stop()
-
-st.title("\U0001F9ED Fattori")
+st.title("Fattori")
 st.caption(
     "Value, Momentum, Quality, Low Volatility, Size: dove si posiziona ogni titolo rispetto a un "
     "universo di confronto (portafoglio + preferiti + peer di settore), non rispetto al proprio "
     "grafico. Serve alla **selezione** dei titoli, non al timing."
 )
 st.info(
-    "⚠️ **Da non confondere**: il *Momentum-fattore* qui è cross-sezionale e di medio termine (total "
+    "**Da non confondere**: il *Momentum-fattore* qui è cross-sezionale e di medio termine (total "
     "return a 12-1 mesi tra titoli diversi — quali titoli comprare) — è un concetto diverso dagli "
     "*oscillatori di momentum* dell'Analisi Tecnica (RSI/Stocastico/MACD, rate-of-change di breve sul "
     "singolo titolo — quando entrare). Un titolo forte su fondamentali e fattori ma teso sulla tecnica "

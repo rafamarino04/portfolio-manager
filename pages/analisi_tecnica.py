@@ -20,17 +20,12 @@ from src import portfolio as pf
 from src import technical as tech
 from src import technical_view as tv
 from src import watchlist as wl
-from src.auth import check_password
 from src.portfolio import CASH_CATEGORY
 from src.theme import apply_theme, badge, disclaimer
 
-st.set_page_config(page_title="Analisi Tecnica", page_icon="\U0001F4C8", layout="wide")
 apply_theme()
 
-if not check_password():
-    st.stop()
-
-st.title("\U0001F4C8 Analisi Tecnica")
+st.title("Analisi Tecnica")
 st.caption(
     "Portafoglio e Preferiti sono già pronti da analizzare, senza doverli ricercare — usa Cerca "
     "per qualsiasi altro titolo. Il motore riconcilia trend strutturale e medie mobili prima di dare "
@@ -136,14 +131,14 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         for sec in narrative["sections"]:
             with st.container(border=True):
                 st.markdown(
-                    f"**{sec['icon']} {sec['title']}** "
+                    f"**{sec['title']}** "
                     f"{badge(tech.VERDICT_LABELS[sec['verdict']], tech.VERDICT_BADGE_KIND[sec['verdict']])}",
                     unsafe_allow_html=True,
                 )
                 st.write(sec["text"])
 
         if snap.get("thematic_flags"):
-            st.markdown("#### \U0001F3F7️ Flag tematici")
+            st.markdown("#### Flag tematici")
             st.caption(
                 "Segnali che raccontano la stessa storia, raggruppati in un unico tema invece di "
                 "disperdersi in più 'neutri' separati."
@@ -151,12 +146,12 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
             for flag in snap["thematic_flags"]:
                 st.markdown(f"- {flag}")
 
-        st.markdown("#### \U0001F9ED Sintesi")
+        st.markdown("#### Sintesi")
         st.info(narrative["synthesis"])
     else:
         st.info("Nessun segnale rilevante al momento.")
 
-    st.markdown("### \U0001F3AF Piano operativo")
+    st.markdown("### Piano operativo")
     st.caption(
         "Uno schema di ingresso/stop/target costruito solo su livelli tecnici oggettivi (supporti, "
         "resistenze, ATR, obiettivi di figura) — un modello da adattare, non un ordine pronto. Se il "
@@ -201,7 +196,7 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
 
 
 tab_portfolio, tab_favorites, tab_search = st.tabs(
-    ["\U0001F4BC Portafoglio", "⭐ Preferiti", "\U0001F50D Cerca"]
+    ["Portafoglio", "Preferiti", "Cerca"]
 )
 
 with tab_portfolio:
@@ -235,7 +230,7 @@ with tab_favorites:
         new_ticker = f1.text_input("Ticker", key="fav_new_ticker")
         new_ref_price = f2.number_input("Prezzo di riferimento (opzionale)", min_value=0.0, value=0.0, step=0.01)
         new_note = f3.text_input("Nota (opzionale)", key="fav_new_note")
-        submitted = f4.form_submit_button("➕ Aggiungi")
+        submitted = f4.form_submit_button("Aggiungi")
     if submitted and new_ticker.strip():
         watch_df = wl.add_ticker(watch_df, new_ticker, new_ref_price or None, new_note)
         wl.save_watchlist(watch_df, WATCHLIST_PATH)
@@ -253,20 +248,20 @@ with tab_favorites:
         )
         remove_choice = st.selectbox("Rimuovi dai preferiti", ["—"] + sorted(watch_df["ticker"].unique()),
                                       key="fav_remove")
-        if remove_choice != "—" and st.button("\U0001F5D1️ Rimuovi", key="fav_remove_btn"):
+        if remove_choice != "—" and st.button("Rimuovi", key="fav_remove_btn"):
             watch_df = wl.remove_ticker(watch_df, remove_choice)
             wl.save_watchlist(watch_df, WATCHLIST_PATH)
             _push_watchlist()
             st.rerun()
 
         st.divider()
-        st.markdown("**\U0001F514 Avvisi sui preferiti**")
+        st.markdown("**Avvisi sui preferiti**")
         st.caption(
             "Segnala eventi tecnici recenti su ogni titolo preferito: incrocio RSI 70/30, incrocio "
             "MACD/segnale, rottura di supporto/resistenza, candela o figura di prezzo rilevata "
             "sull'orizzonte medio termine. Va ricalcolato manualmente ad ogni visita."
         )
-        if st.button("\U0001F50E Scansiona preferiti", key="scan_favorites"):
+        if st.button("Scansiona preferiti", key="scan_favorites"):
             with st.spinner("Scansione dei preferiti in corso..."):
                 st.session_state["_fav_scan"] = alerts.scan_watchlist(list(watch_df["ticker"].unique()))
 
@@ -297,7 +292,7 @@ with tab_search:
                             key="search_ticker").strip().upper()
     if symbol:
         search_watch_df = wl.load_watchlist(WATCHLIST_PATH)
-        if not wl.is_watched(search_watch_df, symbol) and st.button("⭐ Aggiungi ai Preferiti", key="search_add_fav"):
+        if not wl.is_watched(search_watch_df, symbol) and st.button("Aggiungi ai Preferiti", key="search_add_fav"):
             search_watch_df = wl.add_ticker(search_watch_df, symbol)
             wl.save_watchlist(search_watch_df, WATCHLIST_PATH)
             _push_watchlist()

@@ -50,6 +50,13 @@ def enrich_with_prices(df: pd.DataFrame) -> pd.DataFrame:
       coperti da Yahoo Finance): se presente 'manual_price', viene usato al
       posto del prezzo live e la riga e' marcata 'manuale' in price_source.
     """
+    empty_cols = list(df.columns) + [
+        "name", "sector", "price", "price_source", "market_value", "cost_basis",
+        "pl_abs", "pl_pct", "day_change_pct", "weight_pct",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
     rows = []
     for _, row in df.iterrows():
         symbol = row["ticker"]

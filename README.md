@@ -2,39 +2,41 @@
 
 Dashboard indipendente di supporto alle decisioni per un portafoglio di
 azioni, ETF, obbligazioni, fondi/SICAV e liquidità: non solo monitoraggio,
-ma ribilanciamento, confronto con un benchmark, segnali di opportunità sui
-titoli e un report periodico configurabile. Gira fuori da Claude, come un
-sito vero, gratis, sul tuo account GitHub + Streamlit Community Cloud.
+ma registro transazioni, ribilanciamento, confronto con un benchmark,
+analisi tecnica e fondamentale sui singoli titoli, classificazione a
+fattori e un report periodico configurabile. Gira fuori da Claude, come
+un sito vero, gratis, sul tuo account GitHub + Streamlit Community Cloud.
 
 **Cosa NON è**: non è collegato al tuo broker, non esegue ordini, non è
-consulenza finanziaria personalizzata — i segnali di opportunità sono
-indicatori statistici pubblici, da usare come spunto per approfondire. I
-prezzi arrivano da Yahoo Finance (via libreria `yfinance`) con un delay
-tipico di 15-20 minuti — ottimo per decisioni ponderate, non per trading
-attivo.
+consulenza finanziaria personalizzata — ogni indicatore è statistico e
+pubblico, da usare come spunto per approfondire, non come segnale
+operativo. I prezzi arrivano da Yahoo Finance (via libreria `yfinance`)
+con un delay tipico di 15-20 minuti — ottimo per decisioni ponderate, non
+per trading attivo.
+
+**Design**: tema scuro ispirato ai terminali finanziari (sfondo quasi
+nero, card a bordo sottile, cifre in monospace, un solo colore d'accento)
+invece della classica dashboard chiara da gestionale — pensato per
+restare leggibile su tutte le pagine senza distrarre dal dato. Nessuna
+emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 
 ## Cosa include
 
-- `app.py` — dashboard principale (valore, P&L, allocazione per titolo e categoria, rendimento reale XIRR)
-- `pages/0_Registro_Transazioni.py` — registra acquisti, vendite e dividendi **direttamente dall'app**: posizioni, P&L realizzato e XIRR si calcolano da qui automaticamente
-- `pages/1_Ribilanciamento.py` — confronta l'allocazione attuale con un target che imposti tu, con importi suggeriti da comprare/vendere
-- `pages/2_Benchmark_e_Performance.py` — confronto con un indice di mercato (rendimento XIRR reale, non approssimato) + quali posizioni hanno contribuito di più al risultato
-- `pages/3_Opportunita_di_Mercato.py` — segnali sui titoli in portafoglio (range 52 settimane, target price analisti, momentum)
-- `pages/4_Analisi_Tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
-- `pages/5_News.py` — news sui tuoi titoli + news di mercato generali
-- `pages/6_Report_Settimanale.py` — ultimo report automatico + andamento storico
-- `pages/7_Impostazioni_Report.py` — configura allocazione target, benchmark e sezioni del report, senza toccare codice
-- `pages/8_Analisi_Fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
-- `pages/9_Fattori.py` — classifica i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con percentile e radar a 5 assi contro un universo di confronto (portafoglio + preferiti + peer di settore), non contro il proprio grafico: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
-- `scripts/generate_weekly_report.py` — genera il report periodico (lanciato ogni lunedì da GitHub Actions)
+- `app.py` — bootstrap: password, poi la navigazione tra le 5 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
+- `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
+- `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
+- `pages/analisi_fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
+- `pages/fattori.py` — classifica i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con percentile e radar a 5 assi contro un universo di confronto (portafoglio + preferiti + peer di settore), non contro il proprio grafico: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
+- `pages/impostazioni_alert_report.py` — contenuto e periodicità del report automatico; le regole degli alert veri e propri arriveranno in una prossima iterazione
+- `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository finché non verrà ripreso dal lavoro sugli alert
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
 - `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
 - `data/factor_cache.json` — stessa logica di cache, file separato, per le metriche grezze usate dalla pagina Fattori (creato al primo utilizzo della pagina Fattori)
-- `data/settings.json` — le tue impostazioni (target allocation, benchmark, sezioni report)
+- `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report)
 - `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
-- `.streamlit/config.toml` — tema grafico curato (navy/oro, coerente su tutte le pagine)
+- `.streamlit/config.toml` — tema scuro coerente su tutte le pagine
 
 ## Come funziona il registro transazioni
 
@@ -75,9 +77,10 @@ Se il repository esiste già e contiene versioni precedenti disordinate, usa
 contenuto con questa versione pulita.
 
 ### 3. Registra i tuoi movimenti reali
-Una volta che l'app è online (punto 4), usa la pagina **Registro
-Transazioni** dentro l'app — non serve toccare GitHub. Sostituisci le
-righe di esempio con i tuoi acquisti/vendite/dividendi reali:
+Una volta che l'app è online (punto 4), apri la tendina **Registro
+Transazioni** in cima a **Portafoglio Personale** — non serve toccare
+GitHub. Sostituisci le righe di esempio con i tuoi acquisti/vendite/
+dividendi reali:
 
 | colonna | significato |
 |---|---|
@@ -108,16 +111,18 @@ Parigi, `.L` Londra).
 ### 5. L'automazione periodica è già pronta
 GitHub Actions è abilitato di default. Ogni lunedì alle 7:00 UTC il
 workflow genera un nuovo report (le sezioni incluse dipendono da cosa hai
-scelto in **Impostazioni Report**) e lo salva nel repository. Lanciabile
-anche a mano: tab **Actions** → "Report settimanale portafoglio" → **Run
-workflow**. Per cambiare giorno/orario, modifica la riga `cron` in
-`.github/workflows/weekly_report.yml`.
+scelto in **Impostazioni Alert e Report**) e lo salva nel repository —
+resta un file markdown nel repository, senza una pagina dedicata in-app
+al momento. Lanciabile anche a mano: tab **Actions** → "Report
+settimanale portafoglio" → **Run workflow**. Per cambiare giorno/orario,
+modifica la riga `cron` in `.github/workflows/weekly_report.yml`.
 
 ### 6. (Consigliato) Rendi permanenti le modifiche fatte dall'app
-Le pagine **Registro Transazioni** e **Impostazioni Report** salvano di
-base solo sul disco dell'app, che Streamlit Cloud può azzerare ad ogni
-redeploy (succede anche quando il report automatico fa un commit). Per
-renderle permanenti:
+La pagina **Portafoglio Personale** (registro transazioni, allocazione
+ideale, benchmark) e **Impostazioni Alert e Report** salvano di base solo
+sul disco dell'app, che Streamlit Cloud può azzerare ad ogni redeploy
+(succede anche quando il report automatico fa un commit). Per renderle
+permanenti:
 
 1. GitHub → **Settings** (profilo) → **Developer settings** → **Personal
    access tokens** → **Fine-grained tokens** → **Generate new token**
@@ -135,17 +140,21 @@ renderle permanenti:
 
 ## Come usarla per decidere, non solo per guardare
 
-- **Ribilanciamento**: imposta la tua allocazione ideale una volta in
-  Impostazioni Report, poi controlla periodicamente quanto ti sei
-  discostato e di quanto — la pagina ti dice l'importo indicativo da
-  muovere per tornare in equilibrio.
-- **Benchmark**: capire se stai battendo o sottoperformando il mercato è
-  più utile del solo valore assoluto del portafoglio.
-- **Opportunità**: non sono segnali di acquisto/vendita, ma flag su cosa
-  merita un controllo più attento questa settimana.
+- **Portafoglio Personale**: registra ogni movimento reale nella tendina
+  in cima (le posizioni si ricalcolano da sole), poi apri la tendina
+  accanto alla torta per impostare una volta l'allocazione ideale e
+  controllare periodicamente quanto ti sei discostato — la pagina ti dice
+  l'importo indicativo da muovere per tornare in equilibrio. Più in basso,
+  il rendimento per prodotto e il confronto col benchmark ti dicono se
+  stai battendo o sottoperformando il mercato, non solo il valore assoluto
+  del portafoglio.
 - **Analisi Tecnica**: scegli l'orizzonte (breve/medio/lungo termine) in
   base a come usi quel titolo — trading di breve o investimento — e leggi
   il "perché" sotto il grafico prima di decidere.
+- **Analisi Fondamentale**: guarda il Fundamental Score insieme agli
+  anchor assoluti (ROIC vs WACC, bande di leva, zona Altman), non da solo
+  — è un ranking relativo al peer group di settore, non un giudizio
+  assoluto.
 - **Fattori**: prima di comprare un titolo forte sui fondamentali, guarda
   dove si posiziona sui 5 fattori rispetto agli altri titoli che segui —
   un titolo di qualità ma caro (Value basso) o già corso molto (Momentum
@@ -405,6 +414,12 @@ streamlit run app.py
   non FIFO/LIFO — è lo standard più comune per investitori privati ma non
   coincide sempre col calcolo esatto del tuo broker o del fisco.
 - Nessuna esecuzione di ordini: è uno strumento di sola consultazione e analisi.
+- Le pagine Opportunità di Mercato, News e Report Settimanale sono state
+  rimosse dalla navigazione nella revisione grafica/strutturale
+  dell'app: il report periodico continua a generarsi in background
+  (GitHub Actions) e resta un file markdown nel repository, ma non ha
+  più una vista dedicata in-app finché non verrà ripreso dal lavoro
+  sugli alert.
 - I pattern grafici e le candele in Analisi Tecnica sono rilevati con
   regole geometriche automatiche (non da un occhio umano): possono
   produrre falsi segnali, soprattutto su titoli poco liquidi o mercati

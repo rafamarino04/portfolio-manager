@@ -1,7 +1,7 @@
 """
 Rendering condiviso dei grafici di analisi tecnica (candele + overlay,
 oscillatori, volume/OBV) a partire da uno snapshot di src/technical.py.
-Usato da pages/4_Analisi_Tecnica.py (portafoglio/preferiti/ricerca) per
+Usato da pages/analisi_tecnica.py (portafoglio/preferiti/ricerca) per
 tenere la logica di disegno separata dalla logica della pagina.
 """
 from __future__ import annotations

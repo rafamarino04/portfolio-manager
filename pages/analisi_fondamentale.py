@@ -24,17 +24,12 @@ from src import github_sync
 from src import macro as mc
 from src import portfolio as pf
 from src import watchlist as wl
-from src.auth import check_password
 from src.portfolio import CASH_CATEGORY
 from src.theme import apply_theme, badge, disclaimer
 
-st.set_page_config(page_title="Analisi Fondamentale", page_icon="\U0001F9FE", layout="wide")
 apply_theme()
 
-if not check_password():
-    st.stop()
-
-st.title("\U0001F9FE Analisi Fondamentale")
+st.title("Analisi Fondamentale")
 st.caption(
     "Fundamental Score (0-100): un nucleo di 8 metriche a bassa correlazione — creazione di valore, "
     "qualità degli utili, leva, valutazione, capital allocation — più i badge Piotroski F-Score e "
@@ -120,7 +115,7 @@ def render_fundamental_card(symbol: str, key_prefix: str):
 
     if result.get("needs_reit_override"):
         st.caption(
-            "⚠️ Settore Real Estate: la specifica prevede un profilo REIT dedicato (FFO/AFFO al posto "
+            "Settore Real Estate: la specifica prevede un profilo REIT dedicato (FFO/AFFO al posto "
             "di EPS/P/E) non ancora implementato — qui usa il profilo generico Utilities/Defensive più "
             "vicino, da considerare copertura parziale (Stage 2 del piano di implementazione)."
         )
@@ -130,7 +125,7 @@ def render_fundamental_card(symbol: str, key_prefix: str):
 
     excel_bytes = fexp.build_excel_report(symbol, info, price, result)
     st.download_button(
-        "\U0001F4E5 Scarica Excel", data=excel_bytes,
+        "Scarica Excel", data=excel_bytes,
         file_name=f"fundamental_score_{symbol}_{dt.date.today().isoformat()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"{key_prefix}_download_excel",
@@ -198,14 +193,14 @@ def render_fundamental_card(symbol: str, key_prefix: str):
     st.markdown("#### Punti di forza e di attenzione")
     bull_col, bear_col = st.columns(2)
     with bull_col:
-        st.markdown("**\U0001F7E2 Punti di forza**")
+        st.markdown("**Punti di forza**")
         if bulls:
             for b in bulls:
                 st.markdown(f"- {b}")
         else:
             st.caption("Nessun punto di forza netto rispetto al peer group.")
     with bear_col:
-        st.markdown("**\U0001F534 Punti di attenzione**")
+        st.markdown("**Punti di attenzione**")
         if bears:
             for b in bears:
                 st.markdown(f"- {b}")
@@ -266,7 +261,7 @@ def render_fundamental_card(symbol: str, key_prefix: str):
                 "turnover_in_crescita": "Asset turnover in crescita",
             }
             for k, v in crit.items():
-                st.markdown(f"{badge('✓' if v else '✗', 'ok' if v else 'bad')} {crit_labels.get(k, k)}", unsafe_allow_html=True)
+                st.markdown(f"{badge('Sì' if v else 'No', 'ok' if v else 'bad')} {crit_labels.get(k, k)}", unsafe_allow_html=True)
         else:
             st.info("Dati insufficienti per calcolare i criteri Piotroski su questo titolo.")
 
@@ -280,7 +275,7 @@ def render_fundamental_card(symbol: str, key_prefix: str):
             st.info("Nessuna news trovata per questo ticker al momento.")
 
 
-tab_portfolio, tab_favorites, tab_search = st.tabs(["\U0001F4BC Portafoglio", "⭐ Preferiti", "\U0001F50D Cerca"])
+tab_portfolio, tab_favorites, tab_search = st.tabs(["Portafoglio", "Preferiti", "Cerca"])
 
 with tab_portfolio:
     if os.path.exists(PORTFOLIO_PATH):
@@ -311,7 +306,7 @@ with tab_search:
     ).strip().upper()
     if symbol:
         search_watch_df = wl.load_watchlist(WATCHLIST_PATH)
-        if not wl.is_watched(search_watch_df, symbol) and st.button("⭐ Aggiungi ai Preferiti", key="fa_search_add_fav"):
+        if not wl.is_watched(search_watch_df, symbol) and st.button("Aggiungi ai Preferiti", key="fa_search_add_fav"):
             search_watch_df = wl.add_ticker(search_watch_df, symbol)
             wl.save_watchlist(search_watch_df, WATCHLIST_PATH)
             if github_sync.is_configured():

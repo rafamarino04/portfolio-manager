@@ -183,7 +183,7 @@ def _section_profitability(symbol: str) -> dict:
             "(capita per alcuni titoli non statunitensi o a copertura limitata): non è possibile "
             "rispondere con dati reali a questa domanda."
         )
-        return {"key": "profitability", "icon": "\U0001F4C8", "title": "È profittevole?",
+        return {"key": "profitability", "title": "È profittevole?",
                 "verdict": verdict, "text": " ".join(lines), "score": None,
                 "annual": annual, "margins": margins}
 
@@ -234,7 +234,7 @@ def _section_profitability(symbol: str) -> dict:
     if not lines:
         lines.append("Dati insufficienti per rispondere a questa domanda su questo titolo.")
 
-    return {"key": "profitability", "icon": "\U0001F4C8", "title": "È profittevole?",
+    return {"key": "profitability", "title": "È profittevole?",
             "verdict": verdict, "text": " ".join(lines), "score": score,
             "annual": annual, "margins": margins}
 
@@ -338,7 +338,7 @@ def _section_sustainability(symbol: str, annual: dict) -> dict:
     if not lines:
         lines.append("Dati insufficienti per rispondere a questa domanda su questo titolo (comune per alcuni titoli non statunitensi).")
 
-    return {"key": "sustainability", "icon": "\U0001F6E1", "title": "È sostenibile nel tempo?",
+    return {"key": "sustainability", "title": "È sostenibile nel tempo?",
             "verdict": verdict, "text": " ".join(lines), "score": score,
             "roic": roic, "wacc": w, "quality": quality}
 
@@ -450,7 +450,7 @@ def _section_outlook(symbol: str, price: float | None, peers: list[str] | None) 
     if not lines:
         lines.append("Dati insufficienti per rispondere a questa domanda su questo titolo.")
 
-    return {"key": "outlook", "icon": "\U0001F52D", "title": "Ha buone prospettive, anche se i dati storici dicono il contrario?",
+    return {"key": "outlook", "title": "Ha buone prospettive, anche se i dati storici dicono il contrario?",
             "verdict": verdict, "text": " ".join(lines), "score": score,
             "historical_band": band, "peer_table": peer_table, "news_items": sentiment.get("items", []),
             "snapshot": snap, "sector_snapshot": snap_sector, "relative_strength": rel}

@@ -1168,7 +1168,7 @@ def _section_trend(snap: dict) -> dict:
             lines.append(f"Trendline {label} confermata da {line['touches']} punti di contatto, validata contro la serie prezzi.")
 
     verdict = trend["verdict_simple"]
-    return {"key": "trend", "icon": "📈", "title": "Trend e struttura del prezzo",
+    return {"key": "trend", "title": "Trend e struttura del prezzo",
             "verdict": verdict, "text": " ".join(lines)}
 
 
@@ -1221,7 +1221,7 @@ def _section_moving_averages(snap: dict) -> dict:
     if boll.get("squeeze"):
         lines.append("Bande di Bollinger in compressione (squeeze): bassa volatilità, spesso precede un nuovo movimento — senza indicarne la direzione.")
 
-    return {"key": "moving_averages", "icon": "📉", "title": "Medie mobili e volatilità",
+    return {"key": "moving_averages", "title": "Medie mobili e volatilità",
             "verdict": verdict, "text": " ".join(lines)}
 
 
@@ -1279,7 +1279,7 @@ def _section_momentum(snap: dict) -> dict:
     d = mom_vote.get("d", 0.0)
     verdict = "rialzista" if d > 0.2 else ("ribassista" if d < -0.2 else "neutro")
 
-    return {"key": "momentum", "icon": "🌊", "title": "Momentum e oscillatori",
+    return {"key": "momentum", "title": "Momentum e oscillatori",
             "verdict": verdict, "text": " ".join(lines)}
 
 
@@ -1305,7 +1305,7 @@ def _section_volume(snap: dict) -> dict:
     vote = snap.get("votes_by_family", {}).get("Volume", {})
     d = vote.get("d", 0.0)
     verdict = "rialzista" if d > 0.15 else ("ribassista" if d < -0.15 else "neutro")
-    return {"key": "volume", "icon": "📊", "title": "Volume", "verdict": verdict, "text": " ".join(lines)}
+    return {"key": "volume", "title": "Volume", "verdict": verdict, "text": " ".join(lines)}
 
 
 def _section_patterns(snap: dict) -> dict:
@@ -1319,7 +1319,7 @@ def _section_patterns(snap: dict) -> dict:
             "significative nell'orizzonte selezionato: non è un'anomalia, la maggior parte delle sedute "
             "non produce pattern netti."
         )
-        return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
+        return {"key": "patterns", "title": "Pattern grafici e candlestick",
                 "verdict": "neutro", "text": " ".join(lines)}
 
     for cp in cps:
@@ -1334,7 +1334,7 @@ def _section_patterns(snap: dict) -> dict:
     combined = pattern_d + candle_d
     verdict = "rialzista" if combined > 0.15 else ("ribassista" if combined < -0.15 else "neutro")
 
-    return {"key": "patterns", "icon": "🕯️", "title": "Pattern grafici e candlestick",
+    return {"key": "patterns", "title": "Pattern grafici e candlestick",
             "verdict": verdict, "text": " ".join(lines)}
 
 
