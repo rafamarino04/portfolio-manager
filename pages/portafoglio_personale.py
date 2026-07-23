@@ -20,7 +20,8 @@ from src import rebalancing as rb
 from src import report_config as cfg
 from src import transactions as tx
 from src.portfolio import CATEGORIES
-from src.theme import CATEGORY_COLORS, apply_theme, badge, disclaimer
+from src.theme import (BG, CATEGORY_COLORS, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+                       apply_theme, badge, disclaimer)
 
 apply_theme()
 
@@ -189,15 +190,37 @@ with col_pie:
             default="Per categoria", key="alloc_view", label_visibility="collapsed",
         ) or "Per categoria"
 
-        names_col = "ticker" if alloc_view == "Per titolo" else ("category" if has_category else "ticker")
-        fig = px.pie(
-            enriched, values="market_value", names=names_col,
-            hole=0.55, color="category" if has_category else None,
-            color_discrete_map=CATEGORY_COLORS if has_category else None,
+        by_ticker = alloc_view == "Per titolo"
+        names_col = "ticker" if by_ticker else ("category" if has_category else "ticker")
+        plot_df = enriched.dropna(subset=["market_value"]).sort_values("market_value", ascending=False)
+
+        colors = None
+        if has_category:
+            colors = plot_df["category"].map(CATEGORY_COLORS).fillna(TEXT_MUTED).tolist()
+
+        total_value = plot_df["market_value"].sum()
+
+        fig = go.Figure(go.Pie(
+            labels=plot_df[names_col], values=plot_df["market_value"],
+            hole=0.66, sort=False, direction="clockwise",
+            marker=dict(colors=colors, line=dict(color=BG, width=2)),
+            textinfo="percent", textposition="inside", insidetextorientation="radial",
+            textfont=dict(size=12, color=TEXT_PRIMARY, family="Inter, sans-serif"),
+            hovertemplate="<b>%{label}</b><br>%{value:,.2f} · %{percent}<extra></extra>",
+        ))
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(
+                orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02,
+                font=dict(size=12, color=TEXT_SECONDARY), bgcolor="rgba(0,0,0,0)",
+                itemsizing="constant",
+            ),
+            margin=dict(t=10, b=10, l=10, r=10), height=340,
+            annotations=[dict(
+                text=f"<b>{total_value:,.0f}</b><br><span style='font-size:11px;color={TEXT_MUTED}'>valore totale</span>",
+                x=0.5, y=0.5, showarrow=False, font=dict(size=18, color=TEXT_PRIMARY, family="Inter, sans-serif"),
+            )],
         )
-        if alloc_view == "Per titolo":
-            fig.update_traces(hovertemplate="%{label}<br>%{value:,.2f} · %{percent}<extra></extra>")
-        fig.update_layout(showlegend=True, margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True, key="alloc_pie_chart")
     else:
         st.info("Nessun prezzo disponibile per calcolare l'allocazione.")
