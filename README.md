@@ -4,8 +4,9 @@ Dashboard indipendente di supporto alle decisioni per un portafoglio di
 azioni, ETF, obbligazioni, fondi/SICAV e liquidità: non solo monitoraggio,
 ma registro transazioni, ribilanciamento, confronto con un benchmark,
 analisi tecnica e fondamentale sui singoli titoli, classificazione a
-fattori e un report periodico configurabile. Gira fuori da Claude, come
-un sito vero, gratis, sul tuo account GitHub + Streamlit Community Cloud.
+fattori, alert email sui segnali tecnici e un report periodico
+configurabile. Gira fuori da Claude, come un sito vero, gratis, sul tuo
+account GitHub + Streamlit Community Cloud.
 
 **Cosa NON è**: non è collegato al tuo broker, non esegue ordini, non è
 consulenza finanziaria personalizzata — ogni indicatore è statistico e
@@ -27,15 +28,19 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `pages/analisi_fondamentale.py` — **Fundamental Score** (0-100) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Un nucleo di 8 metriche a bassa correlazione (creazione di valore, qualità degli utili, leva, valutazione, capital allocation) più i badge Piotroski F-Score e Altman Z-Score, sempre confrontati con un peer group curato per settore — non con soglie assolute
 - `pages/fattori.py` — classifica i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con percentile e radar a 5 assi contro un universo di confronto (portafoglio + preferiti + peer di settore), non contro il proprio grafico: è il ponte tra Fundamental Score (cosa comprare) e Analisi Tecnica (quando comprarlo)
-- `pages/impostazioni_alert_report.py` — contenuto e periodicità del report automatico; le regole degli alert veri e propri arriveranno in una prossima iterazione
-- `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository finché non verrà ripreso dal lavoro sugli alert
+- `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
+- `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
+- `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
+- `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
 - `data/fundamentals_cache.json` — cache dei fondamentali dei titoli peer usati per i percentili di settore del Fundamental Score, aggiornata al più ogni ~90 giorni (creato al primo utilizzo della pagina Analisi Fondamentale)
 - `data/factor_cache.json` — stessa logica di cache, file separato, per le metriche grezze usate dalla pagina Fattori (creato al primo utilizzo della pagina Fattori)
-- `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report)
-- `.github/workflows/weekly_report.yml` — l'automazione periodica, gratuita
+- `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
+- `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
+- `.github/workflows/weekly_report.yml` — l'automazione del report periodico, gratuita
+- `.github/workflows/technical_alerts.yml` — l'automazione degli alert email sui segnali tecnici, gratuita
 - `.streamlit/config.toml` — tema scuro coerente su tutte le pagine
 
 ## Come funziona il registro transazioni
@@ -117,7 +122,28 @@ al momento. Lanciabile anche a mano: tab **Actions** → "Report
 settimanale portafoglio" → **Run workflow**. Per cambiare giorno/orario,
 modifica la riga `cron` in `.github/workflows/weekly_report.yml`.
 
-### 6. (Consigliato) Rendi permanenti le modifiche fatte dall'app
+### 6. (Opzionale) Attiva gli alert email sui segnali tecnici
+Un secondo workflow, indipendente dal report, scansiona ogni giorno
+feriale il portafoglio e i preferiti e ti scrive un'email solo quando
+compare un segnale tecnico nuovo. Serve un account Gmail (anche quello
+che usi già) con una **password per le app** dedicata — i passaggi
+completi sono nella pagina **Impostazioni Alert e Report** dell'app
+stessa (sezione "Come configurare l'invio"), in sintesi:
+
+1. Attiva la Verifica in due passaggi sul tuo account Google, poi genera
+   una password per le app su https://myaccount.google.com/apppasswords
+2. GitHub → **Settings** (del repository) → **Secrets and variables** →
+   **Actions**, aggiungi `GMAIL_ADDRESS` (il tuo indirizzo Gmail) e
+   `GMAIL_APP_PASSWORD` (il codice generato al passo 1)
+3. Nell'app, apri **Impostazioni Alert e Report**, attiva "Attiva alert
+   email", scegli i tipi di evento e salva
+
+Senza questi due secrets il workflow gira comunque (non fallisce) ma non
+riesce a inviare l'email — lo stato della scansione viene comunque
+salvato per non perdere la deduplica. Per cambiare giorno/orario, modifica
+la riga `cron` in `.github/workflows/technical_alerts.yml`.
+
+### 7. (Consigliato) Rendi permanenti le modifiche fatte dall'app
 La pagina **Portafoglio Personale** (registro transazioni, allocazione
 ideale, benchmark) e **Impostazioni Alert e Report** salvano di base solo
 sul disco dell'app, che Streamlit Cloud può azzerare ad ogni redeploy
@@ -433,9 +459,13 @@ streamlit run app.py
   come conflitto anche casi limite dove i segnali sono semplicemente
   entrambi deboli di segno opposto — un giudizio tecnicamente corretto
   ma da leggere col buon senso, non come oracolo.
-- Gli avvisi sui Preferiti sono solo in-app: nessuna email/notifica push in
-  questa versione. Vanno controllati aprendo la pagina e premendo
-  "Scansiona preferiti" — non è un servizio che gira in background.
+- Il pulsante "Scansiona preferiti" in Analisi Tecnica resta solo in-app
+  (calcolato al momento in cui apri la pagina). Gli **alert email**
+  (sezione Impostazioni Alert e Report) sono invece un servizio separato
+  che gira in background ogni giorno feriale via GitHub Actions e usa lo
+  stesso motore di scansione, ma richiede la configurazione una tantum di
+  Gmail + secrets descritta nel README/nella pagina stessa: finché non è
+  configurato, resta disattivato di default e nessuna email parte.
 - Il Piano operativo usa l'ATR (Average True Range), un indicatore
   standard di volatilità non presente nei capitoli del manuale di Murphy
   usati per il resto del modulo — è stato aggiunto perché necessario per
@@ -486,6 +516,14 @@ streamlit run app.py
   un modello linguistico: può classificare male titoli ambigui o ironici
   ed è pensato come primo orientamento, da verificare leggendo gli
   articoli.
+- Gli **alert email** girano su GitHub Actions gratuito: l'orario non è
+  al secondo (può slittare di qualche minuto nelle ore di punta) e i
+  workflow programmati possono essere disattivati automaticamente da
+  GitHub se il repository resta inattivo a lungo (si riattivano da soli
+  al primo commit o si possono riabilitare a mano dal tab Actions). La
+  deduplica confronta il testo del messaggio, quindi un segnale che
+  scompare e ricompare identico (es. RSI che rientra sotto 70 e poi lo
+  risupera) genera una nuova email, correttamente.
 - I **Fattori** sono premi statistici di lungo periodo, non garanzie:
   possono sottoperformare per anni interi (il value 2010-2020 è
   l'esempio classico) — un percentile alto oggi non è una promessa di

@@ -25,6 +25,9 @@ DEFAULT_SETTINGS = {
         "overview", "allocation", "rebalancing", "benchmark", "opportunities", "news",
     ],
     "report_period": "weekly",
+    "alerts_enabled": False,
+    "alert_recipient_email": "",
+    "alert_event_types": ["RSI", "MACD", "Rottura", "Candela", "Figura"],
 }
 
 ALL_SECTIONS = {
@@ -34,6 +37,19 @@ ALL_SECTIONS = {
     "benchmark": "Confronto con benchmark e performance",
     "opportunities": "Segnali di opportunità sui titoli",
     "news": "News principali",
+}
+
+# Tipi di evento tecnico rilevati da src/alerts.py (vedi ALERT_EVENT_LABELS
+# per le etichette leggibili usate in UI) — usati per filtrare quali
+# eventi possono generare un'email di alert.
+ALERT_EVENT_TYPES = ["RSI", "MACD", "Rottura", "Candela", "Figura"]
+
+ALERT_EVENT_LABELS = {
+    "RSI": "Incrocio soglie RSI (70/30 ipercomprato/ipervenduto)",
+    "MACD": "Incrocio MACD/segnale",
+    "Rottura": "Rottura di supporto/resistenza",
+    "Candela": "Pattern di candlestick rilevato",
+    "Figura": "Figura di prezzo (doppio massimo/minimo, triangolo)",
 }
 
 BENCHMARK_PRESETS = {

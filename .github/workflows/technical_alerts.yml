@@ -1,0 +1,38 @@
+name: Alert tecnici via email
+
+on:
+  schedule:
+    # Ogni giorno feriale alle 21:30 UTC (dopo la chiusura di Wall Street,
+    # circa 23:30/22:30 ora italiana a seconda dell'ora legale)
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch: {}  # permette di lanciarlo a mano da GitHub > Actions > Run workflow
+
+permissions:
+  contents: write
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installa dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Scansiona segnali tecnici e invia email
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python scripts/send_technical_alerts.py
+
+      - name: Commit stato alert
+        run: |
+          git config user.name "portfolio-bot"
+          git config user.email "actions@github.com"
+          git add data/alert_state.json
+          git diff --cached --quiet || git commit -m "Aggiorna stato alert tecnici $(date +'%Y-%m-%d')"
+          git push
