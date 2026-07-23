@@ -65,3 +65,34 @@ if st.button("Salva impostazioni", type="primary"):
             "renderla permanente (vedi README)."
         )
     st.rerun()
+
+st.divider()
+with st.expander("Diagnostica: investpy come fonte dati alternativa (sperimentale)"):
+    st.caption(
+        "Test isolato, non collegato al resto dell'app: verifica se Investing.com risponde ancora "
+        "alle richieste della libreria investpy. Le segnalazioni della community indicano che la "
+        "protezione anti-bot di Investing.com blocca queste richieste con un errore 403 — qui puoi "
+        "vederlo con i tuoi occhi invece di fidarti solo di quanto documentato altrove. Un fallimento "
+        "qui non è un bug dell'app: yfinance resta la fonte dati usata da tutte le altre pagine."
+    )
+    dc1, dc2, dc3 = st.columns(3)
+    test_ticker = dc1.text_input("Ticker (formato investpy)", value="AAPL", key="investpy_ticker")
+    test_country = dc2.text_input("Paese", value="United States", key="investpy_country")
+    test_days = dc3.number_input("Giorni indietro", min_value=7, max_value=180, value=30, key="investpy_days")
+
+    if st.button("Prova investpy", key="investpy_run_test"):
+        from src import investpy_test as ipt
+        today = dt.date.today()
+        from_date = (today - dt.timedelta(days=int(test_days))).strftime("%d/%m/%Y")
+        to_date = today.strftime("%d/%m/%Y")
+        with st.spinner("Chiamata a investpy in corso..."):
+            result = ipt.test_historical_data(test_ticker.strip(), test_country.strip(), from_date, to_date)
+        if result["ok"]:
+            st.success(f"Successo: {result['rows']} righe ricevute. Investing.com risponde ancora a investpy.")
+            st.dataframe(result["preview"], use_container_width=True)
+        else:
+            st.error(
+                f"Fallito in fase di '{result['stage']}': {result['error']}\n\n"
+                "Coerente con quanto segnalato dalla community: Investing.com blocca le richieste "
+                "automatizzate di investpy."
+            )
