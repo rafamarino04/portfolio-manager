@@ -13,7 +13,14 @@ spec Murphy): ogni analisi calcola sempre anche l'orizzonte immediatamente
 superiore e mostra un indicatore di ALLINEAMENTO TRA ORIZZONTI
 (CONCORDE/DISCORDE/NEUTRO/N/D), una sintesi compatta sui tre orizzonti e
 un'etichetta CONTRO-TREND sui piani operativi che vanno contro il trend
-dell'orizzonte superiore — senza mai sopprimerli."""
+dell'orizzonte superiore — senza mai sopprimerli.
+
+Quarta sezione — Idoneità al Trading (Prompt_Cowork_Technical_Tradeability_
+Score.md, src/tradeability.py): non l'analisi del singolo titolo per il
+timing, ma un punteggio assoluto 0-100 sull'universo portafoglio+preferiti
+che misura quanto ogni strumento è STRUTTURALMENTE adatto a un sistema di
+trading tecnico trend-following (liquidità, volatilità, trendiness, gap,
+sensibilità earnings, autocorrelazione) — non è un segnale operativo."""
 import datetime as dt
 import os
 
@@ -26,6 +33,7 @@ from src import github_sync
 from src import portfolio as pf
 from src import technical as tech
 from src import technical_view as tv
+from src import tradeability as trd
 from src import watchlist as wl
 from src.portfolio import CASH_CATEGORY
 from src.theme import apply_theme, badge, disclaimer
@@ -297,8 +305,188 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
             st.info("Nessuna news trovata per questo ticker al momento.")
 
 
-tab_portfolio, tab_favorites, tab_search = st.tabs(
-    ["Portafoglio", "Preferiti", "Cerca"]
+def _tts_band_badge_kind(band: str) -> str:
+    return {
+        "Eccellente": "ok", "Buono": "ok", "Discreto": "warn",
+        "Debole": "warn", "Inadatto": "bad", "Inadatto (esclusione hard)": "bad",
+    }.get(band, "info")
+
+
+def _render_tradeability_section():
+    """Tabella dell'universo di trading (portafoglio + preferiti) ordinata
+    per Technical Tradeability Score, con filtro classe e dettaglio per
+    titolo — stesso pattern (ranking + dettaglio) usato dalla pagina
+    Fattori, applicato qui ai sei criteri di idoneità tecnica invece che
+    ai 5 fattori accademici."""
+    st.caption(
+        "Quanto uno strumento è STRUTTURALMENTE adatto a un sistema di trading tecnico "
+        "trend-following — non è un segnale di acquisto/vendita, ma una misura di idoneità "
+        "dello strumento all'analisi tecnica stessa. Serve a decidere cosa mettere "
+        "nell'universo di trading e cosa testare per primo in backtest/forward test."
+    )
+
+    positions = pd.DataFrame()
+    if os.path.exists(PORTFOLIO_PATH):
+        positions = pf.load_portfolio(PORTFOLIO_PATH)
+        if "category" in positions.columns:
+            positions = positions[positions["category"] != CASH_CATEGORY]
+    portfolio_tickers = sorted(positions["ticker"].unique()) if not positions.empty else []
+
+    watch_df_trd = wl.load_watchlist(WATCHLIST_PATH)
+    watchlist_tickers = sorted(watch_df_trd["ticker"].unique()) if not watch_df_trd.empty else []
+
+    target_tickers = sorted(set(portfolio_tickers) | set(watchlist_tickers))
+    if not target_tickers:
+        st.info(
+            "Nessun titolo in portafoglio o nei preferiti: aggiungine dal Registro Transazioni "
+            "o dalla tab Preferiti/Cerca per vedere qui la loro idoneità al trading tecnico."
+        )
+        return
+
+    st.caption(f"Titoli considerati: {', '.join(target_tickers)}")
+
+    if st.button("Calcola idoneità al trading", key="tts_compute"):
+        with st.spinner("Calcolo Technical Tradeability Score sui titoli dell'universo..."):
+            st.session_state["_tts_report"] = trd.build_tradeability_report(target_tickers)
+
+    report = st.session_state.get("_tts_report")
+    if not report:
+        st.info(
+            "Il calcolo richiede dati storici estesi (fino a 2 anni per titolo) e non viene "
+            "rifatto ad ogni apertura pagina: premi il pulsante sopra per calcolarlo o "
+            "aggiornarlo."
+        )
+        return
+
+    ranking = report["ranking"]
+    not_computable = report["not_computable"]
+
+    if not_computable:
+        with st.expander(f"{len(not_computable)} titolo/i non calcolabile/i"):
+            for r in not_computable:
+                st.markdown(f"- **{r['symbol']}**: {r.get('reason', 'motivo non specificato')}")
+
+    if not ranking:
+        st.warning("Nessun titolo ha prodotto un punteggio calcolabile.")
+        return
+
+    classes_available = sorted({r["asset_class_label"] for r in ranking})
+    chosen_classes = st.multiselect("Filtra per classe", classes_available, default=classes_available,
+                                     key="tts_class_filter")
+    filtered = [r for r in ranking if r["asset_class_label"] in chosen_classes]
+
+    rows = []
+    for r in filtered:
+        s = r["sub_scores"]
+        flags = []
+        if r["hard_excluded"]:
+            flags.append("ESCLUSIONE HARD")
+        if r["confidence"] < 1.0:
+            flags.append(f"confidenza {r['confidence']:.2f}")
+        if r["notes"]:
+            flags.append("override/nota")
+        if not r["tradable_on_broker"]:
+            flags.append("solo backtest yfinance")
+        rows.append({
+            "Ticker": r["symbol"],
+            "Classe": r["asset_class_label"],
+            "TTS": f"{r['tts']:.0f}" if r["tts"] is not None else "n/d",
+            "Banda": r["band"],
+            **{CRITERION_SHORT_LABELS[k]: (f"{s.get(k):.0f}" if s.get(k) is not None else "n/d")
+               for k in trd.WEIGHTS},
+            "Flag": "; ".join(flags) if flags else "—",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key="tts_ranking_table")
+
+    st.markdown("### Dettaglio per titolo")
+    st.caption(
+        "Valori grezzi dietro ogni sub-score, per verificarli — coerentemente col principio di "
+        "trasparenza radicale sulle soglie."
+    )
+    detail_symbol = st.selectbox("Titolo", [r["symbol"] for r in filtered], key="tts_detail_ticker")
+    detail = report["results"].get(detail_symbol)
+    if not detail or not detail.get("computable"):
+        st.info("Dati non disponibili per questo titolo.")
+        return
+
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("TTS", f"{detail['tts']:.0f}/100" if detail["tts"] is not None else "n/d")
+    h2.markdown(f"**Banda**<br>{badge(detail['band'], _tts_band_badge_kind(detail['band']))}",
+                unsafe_allow_html=True)
+    h3.metric("Classe", detail["asset_class_label"])
+    h4.metric("Confidenza", f"{detail['confidence']:.2f}")
+
+    if detail["hard_excluded"]:
+        st.error(
+            "Esclusione hard: " + "; ".join(detail["exclusion_reasons"]) +
+            " — un buon punteggio sugli altri criteri non compensa illiquidità o assenza di trend."
+        )
+    st.markdown(
+        badge("Tradabile su Trade Republic" if detail["tradable_on_broker"] else "Solo backtestabile su yfinance",
+              "ok" if detail["tradable_on_broker"] else "info"),
+        unsafe_allow_html=True,
+    )
+    if detail["asset_class"] == "EQUITY":
+        st.caption(
+            f"Prossima data earnings nota: {detail.get('next_earnings_date') or 'n/d'}. Indipendentemente "
+            "da questo punteggio, i nuovi segnali tecnici vanno bloccati nella finestra earnings "
+            "(regola operativa separata, non ancora automatizzata nel paper trading)."
+        )
+    for note in detail["notes"]:
+        st.caption(f"Nota: {note}")
+
+    sub_rows = []
+    for k, label in CRITERION_SHORT_LABELS.items():
+        s = detail["sub_scores"].get(k)
+        sub_rows.append({
+            "Criterio": trd.CRITERION_LABELS_IT[k],
+            "Peso": f"{trd.WEIGHTS[k] * 100:.0f}%",
+            "Sub-score": f"{s:.0f}/100" if s is not None else "n/d",
+        })
+    st.dataframe(pd.DataFrame(sub_rows), use_container_width=True, hide_index=True, key="tts_detail_subscores")
+
+    with st.expander("Valori grezzi (per verificare i punteggi)"):
+        raw = detail["raw"]
+        raw_rows = [
+            ("ADV (controvalore medio scambiato, EUR)", raw["liquidity"].get("adv_eur")),
+            ("ATR% medio sulla finestra", raw["volatility"].get("atr_pct")),
+            ("Efficiency Ratio (Kaufman) medio", raw["trendiness"].get("er")),
+            ("ADX medio", raw["trendiness"].get("adx")),
+            ("Esponente di Hurst", raw["trendiness"].get("hurst")),
+            ("Frequenza dei gap (%)", raw["gap_frequency"].get("gap_frequency_pct")),
+            ("Frequenza gap del lunedì (%, rischio weekend)", raw["gap_frequency"].get("weekend_gap_frequency_pct")),
+            ("Movimento medio su earnings (%)", raw["earnings"].get("avg_move_pct")),
+            ("Numero earnings considerati", raw["earnings"].get("n_events")),
+            ("Autocorrelazione media (lag usati)", raw["autocorrelation"].get("ac_used_avg")),
+        ]
+        st.dataframe(
+            pd.DataFrame(
+                [(label, f"{v:,.3f}" if isinstance(v, float) else (v if v is not None else "n/d"))
+                 for label, v in raw_rows],
+                columns=["Valore grezzo", "Dato"],
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+    disclaimer(
+        "Il Technical Tradeability Score misura l'idoneità STRUTTURALE dello strumento a un sistema "
+        "di trading tecnico trend-following — non è un segnale di acquisto/vendita né un giudizio "
+        "sulla qualità dell'azienda o dello strumento. Ogni soglia è una costante dichiarata ed "
+        "editoriale (vedi src/tradeability.py), non calibrata con un backtest. Gli override di "
+        "liquidità per FX/crypto e le esclusioni hard sono sempre mostrati esplicitamente, mai "
+        "applicati in silenzio. Ricalcola periodicamente: la tradabilità di uno strumento cambia nel "
+        "tempo."
+    )
+
+
+CRITERION_SHORT_LABELS = {
+    "liquidity": "Liquidità", "volatility": "Volatilità", "trendiness": "Trendiness",
+    "gap_frequency": "Gap", "earnings": "Earnings", "autocorrelation": "Autocorr.",
+}
+
+
+tab_portfolio, tab_favorites, tab_search, tab_tradeability = st.tabs(
+    ["Portafoglio", "Preferiti", "Cerca", "Idoneità al Trading"]
 )
 
 with tab_portfolio:
@@ -400,6 +588,9 @@ with tab_search:
             _push_watchlist()
             st.success(f"{symbol} aggiunto ai preferiti.")
         render_ticker_analysis(symbol, key_prefix="search")
+
+with tab_tradeability:
+    _render_tradeability_section()
 
 disclaimer(
     "L'analisi tecnica descrive schemi statistici passati nei prezzi, non previsioni certe. Il "

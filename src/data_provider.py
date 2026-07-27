@@ -58,6 +58,53 @@ def get_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.Da
         return pd.DataFrame()
 
 
+def get_quote_type(symbol: str) -> str | None:
+    """Tipo di strumento secondo yfinance (EQUITY, ETF, INDEX, CURRENCY,
+    CRYPTOCURRENCY, FUTURE, MUTUALFUND, ...). Usato per adattare criteri
+    che dipendono dalla classe di strumento (es. Technical Tradeability
+    Score, src/tradeability.py) senza mai hardcodare un elenco di ticker."""
+    try:
+        t = get_ticker(symbol)
+        qt = t.info.get("quoteType")
+        return str(qt).upper() if qt else None
+    except Exception:
+        return None
+
+
+def get_earnings_dates(symbol: str, limit: int = 16) -> pd.DataFrame:
+    """Date storiche/future degli utili trimestrali, se disponibili.
+    DataFrame vuoto se lo strumento non ha earnings (ETF, indici, FX,
+    crypto, future) o se yfinance non fornisce il dato per questo ticker."""
+    try:
+        t = get_ticker(symbol)
+        df = t.get_earnings_dates(limit=limit)
+        return df if df is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_fx_rate(quote_currency: str | None, base_currency: str = "EUR") -> float | None:
+    """Quante unità di `quote_currency` per 1 unità di `base_currency`,
+    via il ticker yfinance standard (es. EURUSD=X = quanti USD per 1
+    EUR). None se la coppia non è quotata o il dato non è disponibile —
+    il chiamante deve trattare None come "conversione non disponibile",
+    mai come tasso 1:1 implicito."""
+    if not quote_currency:
+        return None
+    if quote_currency.upper() == base_currency.upper():
+        return 1.0
+    pair = f"{base_currency.upper()}{quote_currency.upper()}=X"
+    try:
+        hist = get_history(pair, period="5d", interval="1d")
+        if hist is not None and not hist.empty:
+            val = hist["Close"].dropna()
+            if not val.empty:
+                return float(val.iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
 def get_info(symbol: str) -> dict:
     """Nome, settore, valuta, market cap, P/E, range 52 settimane, e segnali
     per la pagina Opportunità (target price analisti, dividend yield, beta)."""

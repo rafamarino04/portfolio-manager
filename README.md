@@ -25,7 +25,8 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 
 - `app.py` — bootstrap: password, poi la navigazione tra le 5 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
-- `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici) e **Cerca** (ricerca libera). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
+- `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici), **Cerca** (ricerca libera) e **Idoneità al Trading** (Technical Tradeability Score sull'universo Portafoglio+Preferiti). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
+- `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
@@ -33,7 +34,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), più un AppTest sulla pagina Analisi Tecnica
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, più un AppTest sulla pagina Analisi Tecnica (incluse le quattro tab)
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
@@ -351,6 +352,98 @@ limita la portata, e mostra una **confidenza complessiva** distinta
 (Agreement Index corretto per l'allineamento tra orizzonti — stima
 editoriale dichiarata, non backtestata) accanto ai due numeri originali.
 
+## Technical Tradeability Score: come funziona
+
+Quarta sezione della pagina **Analisi Tecnica** ("Idoneità al Trading"),
+motore in `src/tradeability.py`. Non è l'analisi del singolo titolo per
+decidere *quando* entrare (quello resta il compito di Directional Score +
+Agreement Index nelle altre tre sezioni): è un punteggio **assoluto
+0-100** che misura quanto uno strumento è **strutturalmente** adatto a un
+sistema di trading tecnico trend-following — serve a decidere **cosa
+mettere nell'universo di trading** e cosa testare per primo in
+backtest/forward test, non se comprarlo o venderlo oggi. Si applica
+all'universo Portafoglio + Preferiti, esattamente come la pagina Fattori,
+e va **ricalcolato periodicamente** (il pulsante "Calcola idoneità al
+trading" non gira automaticamente ad ogni apertura pagina, perché
+richiede fino a 2 anni di storico per titolo).
+
+Sei criteri, ciascuno un sub-score assoluto su scala fissa (ancore
+dichiarate nel codice, mai calibrate con un backtest), combinati in una
+media pesata su una finestra rolling di 252 barre daily (~1 anno di
+borsa):
+
+- **Liquidità (20%)**: controvalore medio scambiato negli ultimi 20
+  giorni (ADV), convertito in EUR. Ancore: sotto 1 Mln€ = punteggio 0
+  (illiquido), 10 Mln€ = 40, 100 Mln€ = 70, 1 Mld€ o oltre = 100. Per FX e
+  crypto, dove il campo Volume di yfinance è spesso inaffidabile o zero,
+  lo score è un valore fisso dichiarato come override (90 per le coppie
+  FX, 85 per BTC/ETH, 60 per le altre crypto) — mai calcolato in silenzio
+  da un volume comunque inattendibile.
+- **Volatilità ATR% (15%)**: ATR di Wilder (stessa formula di
+  `src/technical.py`) diviso il prezzo, su una curva **a campana**: sweet
+  spot 2,5% (punteggio 100), penalizzata sia troppo poca volatilità
+  (sotto 0,8%, i costi non si coprono) sia troppa (sopra il 10%, gli stop
+  diventano casuali). Per le crypto la curva è spostata a destra (sweet
+  spot 4-5%, nessuna penalizzazione forte fino all'8%), coerentemente con
+  la loro volatilità strutturalmente più alta.
+- **Trendiness (30%, il criterio più pesante)**: media di tre
+  sotto-metriche indipendenti — Kaufman Efficiency Ratio (rettilineità del
+  movimento), ADX medio di Wilder (forza della direzionalità) ed
+  esponente di Hurst (persistenza vs mean-reversion dei rendimenti,
+  stimato via la pendenza di log(deviazione standard) su log(lag), lag da
+  2 a 64 barre). Un titolo strutturalmente mean-reverting (l'esponente di
+  Hurst misura la persistenza dei *rendimenti*, non la semplice presenza
+  di un drift: un prezzo può salire costantemente e restare comunque un
+  random walk se i rendimenti non sono autocorrelati) ottiene qui un
+  punteggio basso su tutte e tre le sotto-metriche.
+- **Frequenza dei gap (15%)**: quota di sedute negli ultimi 60 giorni con
+  un gap di apertura superiore all'ATR — i gap saltano gli stop, rendendo
+  il risk management solo teorico. Nessun gap = 100, gap quasi ogni
+  giorno (≥30%) = 10. Per le crypto (mercato 24/7) i gap del lunedì sono
+  contati a parte come rischio weekend: lo score non può salire fino a
+  100 se il lunedì gappa spesso, anche con una frequenza giornaliera
+  complessiva bassa.
+- **Sensibilità earnings (10%)**: ETF, indici, FX, crypto e future
+  ottengono 100 per esenzione strutturale (nessuna pubblicazione utili).
+  Per le azioni singole, il movimento medio assoluto di prezzo sulle
+  ultime pubblicazioni (fino a 2 anni indietro, coerente con la finestra
+  storica scaricata): sotto il 2% = punteggio 80, 12% o oltre = 10. La
+  pagina mostra sempre la prossima data earnings nota — il **blocco
+  operativo dei segnali nella finestra earnings resta una regola
+  separata**, non ancora automatizzata nel modulo di paper trading.
+- **Autocorrelazione (10%)**: calcolata sui rendimenti aggregati
+  all'orizzonte di posizionamento (5 giorni di borsa = settimanale, non
+  overlapping) invece che sui rendimenti daily grezzi, dove molti
+  strumenti mostrano una leggera autocorrelazione negativa (short-term
+  reversal) che sull'orizzonte settimanale spesso si inverte. Positiva e
+  marcata (≥0,20) = momentum forte, punteggio 100; negativa e marcata
+  (≤-0,15) = mean-reversion ostile al trend-following, punteggio 10.
+
+**Regola di esclusione hard**: se Liquidità < 20 oppure Trendiness < 25,
+lo strumento è marcato "inadatto al trading tecnico" **indipendentemente
+dal totale pesato** — un buon punteggio sugli altri quattro criteri non
+compensa illiquidità o assenza di trend, entrambi requisiti strutturali
+per un sistema trend-following, non compensabili a livello di media.
+
+**Bande di lettura**: 80-100 Eccellente, 65-79 Buono, 50-64 Discreto,
+35-49 Debole, 0-34 Inadatto. Ogni titolo mostra la **scomposizione
+completa** (i sei sub-score, mai solo il totale) e i **valori grezzi**
+dietro ciascuno (ADV in EUR, ATR% medio, ER, ADX medio, esponente di
+Hurst, frequenza dei gap, movimento medio su earnings, autocorrelazione)
+in un pannello dedicato, per poter verificare da dove viene ogni
+punteggio. Un **indicatore di confidenza** si riduce (mai in silenzio)
+quando una o più metriche non sono calcolabili — ad esempio earnings non
+disponibili da yfinance, o volume nullo — senza mai sostituire il dato
+mancante con un valore neutro che gonfierebbe il totale.
+
+La classe di strumento (Azione/ETF/Indice/Fondo/FX/Crypto/Future) si
+rileva sempre da `quoteType` di yfinance, **mai da un elenco di ticker
+scritto a mano**. La pagina distingue anche tra strumenti **tradabili su
+Trade Republic** e **solo backtestabili su yfinance** (FX, future,
+crypto): è una mappa indicativa dichiarata nel codice
+(`BROKER_TRADABLE_ASSET_CLASSES`), non un dato ufficiale integrato via
+API — da correggere se l'offerta reale del broker diverge.
+
 ## Analisi Fondamentale v2.1: come funziona
 
 La pagina **Analisi Fondamentale** calcola due punteggi **assoluti 0-100
@@ -561,7 +654,17 @@ orizzonti (`classify_horizon_alignment`, `plan_alignment_warning`,
 dizionari/serie storiche sintetiche — nessun accesso di rete richiesto.
 `tests/test_analisi_tecnica_page.py` esegue un AppTest sulla pagina
 Streamlit con dati storici sintetici (via monkeypatch di
-`src/data_provider.py`) per escludere eccezioni a runtime.
+`src/data_provider.py`) per escludere eccezioni a runtime, incluso il
+calcolo del Technical Tradeability Score nella tab "Idoneità al Trading".
+`tests/test_tradeability.py` copre i sei criteri del Technical
+Tradeability Score in isolamento (liquidità, volatilità, trendiness,
+gap, earnings, autocorrelazione) su serie storiche sintetiche con
+proprietà statistiche note — un processo Ornstein-Uhlenbeck
+mean-reverting per verificare che Trendiness sia basso (Hurst < 0,5),
+rendimenti AR(1) con autocorrelazione positiva per verificare che
+Trendiness e Autocorrelazione siano alti — oltre alla regola di
+esclusione hard, agli override FX/crypto e alla robustezza del report
+quando un titolo nell'universo fallisce.
 
 Gli script `scripts/verify_axis_distribution.py` e
 `scripts/verify_horizon_scaling.py` sono verifiche manuali distinte, non
