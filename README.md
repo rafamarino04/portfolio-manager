@@ -23,10 +23,12 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 
 ## Cosa include
 
-- `app.py` — bootstrap: password, poi la navigazione tra le 5 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
+- `app.py` — bootstrap: password, poi la navigazione tra le 6 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
 - `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici), **Cerca** (ricerca libera), **Idoneità al Trading** (Technical Tradeability Score, con ambito dello screening selezionabile) e **Universo Trading** (la short-list selezionata per il trading). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
+- `pages/backtest.py` — **Backtest** del piano operativo dell'Analisi Tecnica sull'Universo Trading: motore event-driven bar-by-bar (`src/engine/`), esecuzione al next-bar-open, regola stop-first sull'ambiguità intrabar, gap pagati al prezzo reale, costi Trade Republic + FX, sizing a frazione fissa del rischio, metriche in EUR e in R con intervalli di Wilson, benchmark buy-and-hold ed entrata casuale, verdetto in linguaggio piano
+- `src/engine/` — il motore condiviso da backtest e (in futuro) forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`
 - `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
@@ -35,7 +37,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, più un AppTest sulla pagina Analisi Tecnica (incluse le cinque tab)
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
@@ -498,6 +500,155 @@ emergere, dato che la tradabilità di uno strumento cambia nel tempo.
 Aggiornare la nota di un titolo **non** azzera il punteggio congelato:
 si sovrascrive solo ricalcolandolo esplicitamente.
 
+## Backtest: come funziona
+
+La pagina **Backtest** risponde a una sola domanda: *il piano operativo
+che l'Analisi Tecnica mi mostra ha un edge reale?* Motore in
+`src/engine/`, costruito secondo `BACKTEST AND FORWARD.pdf` (Stage 0
+architettura + Stage 1 backtest in-sample). Non testa una versione
+semplificata del segnale: chiama `technical_snapshot` + `trade_plan`,
+cioè **esattamente** ciò che vedi a schermo. Gira sull'**Universo
+Trading**, la lista che hai selezionato per il trading.
+
+Il suo compito non è produrre una bella curva di equity, ma dirti la
+verità su se il segnale abbia un edge che sopravvive ai costi ed è
+statisticamente sostenuto. È progettato per **smentire** il segnale.
+
+### Architettura event-driven (e perché non vettoriale)
+
+Un backtest vettoriale calcola i segnali su tutto l'array di prezzi in una
+passata: è veloce, ma non modella stop/target, path-dependence ed
+esecuzione, e invita il look-ahead bias. Il motore qui è **event-driven**:
+processa una barra alla volta come se arrivasse dal vivo. Il vantaggio
+decisivo è il **riuso del codice** — lo stesso motore guiderà il forward
+paper trader, ed è l'unico modo perché una divergenza tra backtest e
+paper sia attribuibile all'attrito reale del mercato invece che a
+differenze di implementazione.
+
+Ogni barra esegue sempre gli stessi passi nello stesso ordine: esegue gli
+ordini accodati ieri all'apertura di oggi, aggiorna le posizioni aperte e
+verifica stop/target, valuta il segnale sul close, accoda un ordine per
+domani, valorizza l'equity.
+
+### Le tre regole da cui dipende l'onestà del risultato
+
+- **Segnale sul close del bar t, esecuzione all'apertura del bar t+1.**
+  Eseguire sullo stesso close usato per generare il segnale è il bug di
+  look-ahead classico, quello che fabbrica profitti inesistenti. Il
+  rischio iniziale (1R) si ricalcola sull'ingresso **effettivo**, non su
+  quello pianificato.
+- **Ambiguità intrabar risolta con stop-first.** Con barre daily non si
+  può sapere se sia arrivato prima il massimo o il minimo: se il range di
+  una barra contiene sia lo stop sia il target, si assume che sia stato
+  colpito lo **stop**, l'esito peggiore.
+- **I gap si pagano al prezzo reale.** Se la barra apre già oltre lo stop,
+  il fill avviene all'apertura — peggiore dello stop teorico — perché quel
+  gap è slippage vero. Il risultato è che un trade può chiudere a −2R
+  invece che a −1R: è la coda sinistra reale, ed è precisamente ciò che la
+  leva amplificherebbe.
+
+### Costi
+
+Applicati a livello di singolo trade, con curva lorda e netta sempre
+affiancate. Tre componenti: commissione Trade Republic (1 EUR per ordine
+Best Price, 2 EUR Direct Price), costo di conversione valutaria sugli
+strumenti non in EUR, e spread/slippage.
+
+Il costo FX è la voce genuinamente opaca: dopo il divieto UE di Payment
+for Order Flow (30 giugno 2026) Trade Republic esegue sulla propria
+infrastruttura e il costo è **incorporato nello spread**, non pubblicato.
+Le stime indipendenti sono in conflitto tra loro. Il default qui è
+**0,5% per gamba** (≈1% sul round trip): una stima prudenziale dichiarata,
+non un dato ufficiale, ed è un parametro modificabile in pagina. Non si
+applica agli ETF UCITS che quotano in EUR. Se la valuta di uno strumento
+è ignota si assume il caso peggiore (costo applicato): un costo
+dimenticato è il modo classico in cui un backtest si lusinga da solo.
+
+### Dimensionamento e leva
+
+Sizing a **frazione fissa del rischio**: `size = (equity × risk%) /
+(entry − stop)`, con default 0,75% e tetto all'1%. Ogni perdita piena vale
+quindi sempre la stessa frazione dell'equity, e la size si adatta
+automaticamente alla volatilità. Tre cap rigidi: rischio per trade ≤1,5%,
+esposizione lorda aggregata ≤1,5× equity, somma dei rischi aperti ≤5%
+dell'equity — perché un sistema che rispetta l'1% per trade ma tiene dieci
+posizioni aperte sta rischiando il 10%, non l'1%.
+
+La **leva da confidenza nasce disattivata** e tutto gira a 1,0×. La mappa
+esiste (sotto 50 non si opera, 50-69 → 1,0×, 70-84 → 1,25×, 85-100 →
+1,5× con tetto rigido) ma si sblocca solo dopo che la calibrazione
+empirica avrà mostrato che i segnali "85 di confidenza" vincono davvero
+circa l'85% delle volte. Il motivo è che la confidenza è una *stima*, e
+l'errore di stima è esattamente ciò che la leva magnifica; per giunta i
+segnali ad alta confidenza, quando falliscono, tendono a farlo nei gap e
+nei cambi di regime, cioè proprio dove vive la coda sinistra. Nota che
+Trade Republic è spot-only: qui la "leva" è un costrutto di modello che
+nel reale mappa sulla concentrazione di capitale, che amplifica i
+drawdown allo stesso modo.
+
+### Metriche e benchmark
+
+Ogni trade è tracciato **sia in euro sia in R** (multipli del rischio
+iniziale): gli R dicono se il *segnale* ha un edge, gli euro dicono cosa
+gli hanno fatto sizing e leva. Metriche calcolate: expectancy in R e in
+EUR, win rate con **intervallo di Wilson al 95%**, profit factor, Sharpe,
+Sortino, max drawdown, Calmar, durata media, MAE/MFE.
+
+Due benchmark **obbligatori**, mostrati accanto a ogni curva:
+
+- **Buy-and-hold** degli stessi strumenti: il timing ha aggiunto qualcosa
+  rispetto a restare semplicemente investito?
+- **Entrata casuale** in Monte Carlo, con la stessa frequenza di trade e
+  identiche regole di stop/target/sizing: l'edge viene dal *segnale* o
+  soltanto dalle uscite e dal money management? Nell'esperimento di Tom
+  Basso riportato da Van Tharp, entrate a testa o croce con uno stop a
+  3×ATR e rischio all'1% hanno fatto soldi il 100% delle volte con un win
+  rate del 38%. Un segnale si guadagna il posto solo se batte il caso a
+  parità di tutto il resto.
+
+### Guardrail anti-autoinganno cablati nella pagina
+
+Non sono opzioni: sono il motivo per cui la pagina esiste.
+
+1. Rendimento lordo sempre accanto al netto, con il costo esplicitato.
+2. In-sample e out-of-sample affiancati, con la percentuale di expectancy
+   trattenuta fuori campione.
+3. Nessun win rate senza il suo intervallo di Wilson e il numero di trade.
+4. Metriche marcate come non interpretabili sotto i 50 trade, e come non
+   ancora affidabili sotto i 100 (idealmente ne servono 200+).
+5. Entrambi i benchmark accanto alla curva di equity.
+6. Conteggio delle configurazioni provate in sessione, con avviso oltre
+   le 3: ogni tentativo in più gonfia per caso il risultato migliore.
+7. Expectancy in R in evidenza, perché è la metrica che la leva non può
+   mascherare.
+8. **Verdetto in linguaggio piano**: edge *stabilito*, *marginale*, *non
+   provato* o *assente*, con la motivazione esplicita.
+
+L'out-of-sample è **disattivato di default**, coerentemente con lo Stage 1
+della specifica: va guardato una volta sola, dopo aver congelato i
+parametri. Rieseguire il backtest cambiando parametri finché l'OOS non
+migliora lo converte silenziosamente in in-sample e garantisce
+overfitting. Se l'out-of-sample risulta **migliore** dell'in-sample la
+pagina lo segnala come sospetto di contaminazione, non come trionfo: il
+decadimento fuori campione è la norma (i rendimenti calano tipicamente di
+un quarto, lo Sharpe di circa un terzo).
+
+### Limiti dichiarati
+
+Orizzonti supportati: solo quelli su barre daily (`breve`, `medio`). Il
+lungo termine usa barre settimanali e richiederebbe un ricampionamento
+dedicato: è escluso invece di essere approssimato con dati daily, che
+darebbe risultati diversi da quelli mostrati nell'app. I dati vengono da
+yfinance, di qualità retail (attenzione a rettifiche per split/dividendi e
+barre mancanti). Le posizioni ancora aperte all'ultimo bar vengono chiuse
+al close: escluderle renderebbe i risultati sistematicamente migliori del
+reale, perché le posizioni in perdita tendono a restare aperte più a lungo.
+
+Il **forward paper trading** (Stage 3) e la **calibrazione della
+confidenza** (Stage 4) non sono ancora implementati: il motore è però già
+strutturato perché il paper trader sia un secondo wrapper sottile sopra
+gli stessi moduli.
+
 ## Analisi Fondamentale v2.1: come funziona
 
 La pagina **Analisi Fondamentale** calcola due punteggi **assoluti 0-100
@@ -723,6 +874,16 @@ quando un titolo nell'universo fallisce.
 Trading, in particolare che aggiornare la nota di un titolo non cancelli
 il TTS congelato e che un CSV scritto da una versione precedente (solo
 `ticker`) si carichi senza errori.
+`tests/test_engine_execution.py` copre le tre regole di esecuzione da cui
+dipende l'onestà del backtest (fill al next-bar-open, stop-first
+sull'ambiguità intrabar, gap pagati al prezzo reale) su barre costruite a
+mano con esito calcolabile a mente. `tests/test_engine_risk_metrics.py`
+copre sizing, cap di rischio aggregati, modello di costo, intervalli di
+Wilson e verdetto. `tests/test_engine_integration.py` esegue la pipeline
+completa con il segnale REALE (`trade_plan`) su serie sintetiche a tre
+regimi, senza rete. `tests/test_backtest_page.py` verifica che i guardrail
+anti-autoinganno siano effettivamente presenti in pagina, non solo che la
+pagina non vada in eccezione.
 
 I test non scrivono mai dentro `data/`, che è versionata: l'Universo
 Trading viene rediretto su una cartella temporanea, perché un file di

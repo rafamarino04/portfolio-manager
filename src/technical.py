@@ -1088,9 +1088,18 @@ def _build_votes(snap: dict) -> dict:
 # Snapshot completo per orizzonte temporale
 # ---------------------------------------------------------------------------
 
-def technical_snapshot(symbol: str, horizon: str = "medio") -> dict | None:
+def technical_snapshot(symbol: str, horizon: str = "medio",
+                        hist: pd.DataFrame | None = None) -> dict | None:
+    """`hist` permette di passare uno storico già caricato invece di
+    scaricarlo. Serve al motore di backtest (src/engine/), che deve
+    calcolare il segnale su una finestra troncata al bar corrente
+    ("point-in-time"): ricalcolare il segnale bar per bar è l'unico modo
+    di evitare il look-ahead bias, e riscaricare i dati ad ogni bar
+    sarebbe impraticabile oltre che inutile. Quando è None il
+    comportamento resta identico a prima (download da yfinance)."""
     params = HORIZONS.get(horizon, HORIZONS["medio"])
-    hist = dp.get_history(symbol, period=params["period"], interval=params["interval"])
+    if hist is None:
+        hist = dp.get_history(symbol, period=params["period"], interval=params["interval"])
     min_bars = max(30, params["ma"][-1] // 2)
     if hist is None or hist.empty or len(hist) < min_bars:
         return None

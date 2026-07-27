@@ -20,6 +20,7 @@ if not check_password():
 pages = [
     st.Page("pages/portafoglio_personale.py", title="Portafoglio Personale", default=True),
     st.Page("pages/analisi_tecnica.py", title="Analisi Tecnica"),
+    st.Page("pages/backtest.py", title="Backtest"),
     st.Page("pages/analisi_fondamentale.py", title="Analisi Fondamentale"),
     st.Page("pages/fattori.py", title="Fattori"),
     st.Page("pages/impostazioni_alert_report.py", title="Impostazioni Alert e Report"),
