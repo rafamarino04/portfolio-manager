@@ -25,8 +25,9 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 
 - `app.py` — bootstrap: password, poi la navigazione tra le 5 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
-- `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici), **Cerca** (ricerca libera) e **Idoneità al Trading** (Technical Tradeability Score sull'universo Portafoglio+Preferiti). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
+- `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici), **Cerca** (ricerca libera), **Idoneità al Trading** (Technical Tradeability Score, con ambito dello screening selezionabile) e **Universo Trading** (la short-list selezionata per il trading). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
+- `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
@@ -34,11 +35,12 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, più un AppTest sulla pagina Analisi Tecnica (incluse le quattro tab)
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, più un AppTest sulla pagina Analisi Tecnica (incluse le cinque tab)
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
+- `data/trading_universe.csv` — il tuo Universo Trading: ticker, nota e TTS congelato all'inserimento (creato al primo inserimento)
 - `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
 - `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
 - `.github/workflows/weekly_report.yml` — l'automazione del report periodico, gratuita
@@ -444,6 +446,58 @@ crypto): è una mappa indicativa dichiarata nel codice
 (`BROKER_TRADABLE_ASSET_CLASSES`), non un dato ufficiale integrato via
 API — da correggere se l'offerta reale del broker diverge.
 
+L'**ambito dello screening è selezionabile** — Portafoglio, Preferiti o
+Universo Trading — perché le tre liste servono a domande diverse: vagliare
+quello che già possiedi, vagliare i candidati che stai seguendo, o
+monitorare la short-list che hai già selezionato. Il risultato è
+memorizzato **per ambito**, così cambiare lista non mostra mai la
+classifica di un'altra come se fosse quella scelta.
+
+Il Technical Tradeability Score compare anche come **badge compatto**
+(punteggio, banda, eventuale esclusione hard) accanto all'analisi tecnica
+del singolo titolo nelle sezioni **Preferiti** e **Universo Trading** — le
+due orientate al trading. È volutamente assente in Portafoglio e Cerca,
+dove aggiungerebbe il download di 2 anni di storico ad ogni apertura senza
+essere il motivo per cui stai guardando quel titolo.
+
+## Universo Trading: come funziona
+
+Quinta sezione della pagina **Analisi Tecnica**, persistenza in
+`src/trading_universe.py` (`data/trading_universe.csv`). È la
+**short-list dei titoli selezionati per il trading tecnico**, ed è una
+lista **distinta dai Preferiti** — non un flag sulla stessa. La
+distinzione non è cosmetica:
+
+- I **Preferiti** sono i titoli che segui per qualunque ragione:
+  interesse, valutazione fondamentale, attesa di un prezzo d'ingresso.
+- L'**Universo Trading** è il sottoinsieme che hai giudicato
+  strutturalmente adatto a un sistema di trading tecnico, tipicamente
+  dopo averlo vagliato col Technical Tradeability Score.
+
+Un titolo può stare in una lista, nell'altra, in entrambe o in nessuna:
+un'azienda eccellente che gappa di continuo resta un buon Preferito e un
+pessimo candidato di trading; un ETF noioso da seguire ma liquidissimo e
+pulito nei trend merita l'Universo Trading senza essere un Preferito.
+
+Il flusso previsto è: **vagli** i candidati nella tab Idoneità al Trading
+(ambito Portafoglio o Preferiti), **promuovi** i migliori con il pulsante
+di inserimento nel dettaglio, poi **rilanci** la classifica sull'ambito
+Universo Trading per monitorarla nel tempo. Puoi anche inserire un titolo
+direttamente dalla tab Universo Trading: il punteggio viene calcolato e
+congelato in quel momento.
+
+Ogni riga conserva una **nota libera** (perché l'hai inserito) e il
+**TTS congelato all'inserimento con la data in cui è stato congelato**.
+La data è indispensabile perché il punteggio storico sia interpretabile:
+senza sapere a quando risale, confrontarlo con quello attuale non
+direbbe nulla. Quando analizzi un titolo dell'universo, la pagina mostra
+punteggio congelato e punteggio attuale affiancati con la differenza, e
+**avvisa esplicitamente se la tradabilità è peggiorata di 10 punti o
+più** dall'inserimento — il caso che questo confronto esiste per far
+emergere, dato che la tradabilità di uno strumento cambia nel tempo.
+Aggiornare la nota di un titolo **non** azzera il punteggio congelato:
+si sovrascrive solo ricalcolandolo esplicitamente.
+
 ## Analisi Fondamentale v2.1: come funziona
 
 La pagina **Analisi Fondamentale** calcola due punteggi **assoluti 0-100
@@ -665,6 +719,15 @@ rendimenti AR(1) con autocorrelazione positiva per verificare che
 Trendiness e Autocorrelazione siano alti — oltre alla regola di
 esclusione hard, agli override FX/crypto e alla robustezza del report
 quando un titolo nell'universo fallisce.
+`tests/test_trading_universe.py` copre la persistenza dell'Universo
+Trading, in particolare che aggiornare la nota di un titolo non cancelli
+il TTS congelato e che un CSV scritto da una versione precedente (solo
+`ticker`) si carichi senza errori.
+
+I test non scrivono mai dentro `data/`, che è versionata: l'Universo
+Trading viene rediretto su una cartella temporanea, perché un file di
+test lasciato lì finirebbe in un commit e comparirebbe come voce
+fantasma nell'app.
 
 Gli script `scripts/verify_axis_distribution.py` e
 `scripts/verify_horizon_scaling.py` sono verifiche manuali distinte, non

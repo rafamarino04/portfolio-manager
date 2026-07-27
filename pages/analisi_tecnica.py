@@ -17,10 +17,17 @@ dell'orizzonte superiore — senza mai sopprimerli.
 
 Quarta sezione — Idoneità al Trading (Prompt_Cowork_Technical_Tradeability_
 Score.md, src/tradeability.py): non l'analisi del singolo titolo per il
-timing, ma un punteggio assoluto 0-100 sull'universo portafoglio+preferiti
-che misura quanto ogni strumento è STRUTTURALMENTE adatto a un sistema di
-trading tecnico trend-following (liquidità, volatilità, trendiness, gap,
-sensibilità earnings, autocorrelazione) — non è un segnale operativo."""
+timing, ma un punteggio assoluto 0-100 che misura quanto ogni strumento è
+STRUTTURALMENTE adatto a un sistema di trading tecnico trend-following
+(liquidità, volatilità, trendiness, gap, sensibilità earnings,
+autocorrelazione) — non è un segnale operativo. L'ambito dello screening è
+selezionabile: Portafoglio, Preferiti o Universo Trading.
+
+Quinta sezione — Universo Trading (src/trading_universe.py): la short-list
+dei titoli selezionati per il trading tecnico, distinta dai Preferiti.
+Ogni riga conserva una nota e il TTS congelato all'inserimento con la sua
+data, così da poterlo confrontare col punteggio attuale e accorgersi
+quando uno strumento è diventato meno tradabile di quando l'hai scelto."""
 import datetime as dt
 import os
 
@@ -33,6 +40,7 @@ from src import github_sync
 from src import portfolio as pf
 from src import technical as tech
 from src import technical_view as tv
+from src import trading_universe as tu
 from src import tradeability as trd
 from src import watchlist as wl
 from src.portfolio import CASH_CATEGORY
@@ -133,13 +141,68 @@ def _push_watchlist():
         (st.success if ok else st.error)(msg)
 
 
+def _push_trading_universe():
+    if github_sync.is_configured():
+        ok, msg = github_sync.push_csv(tu.TRADING_UNIVERSE_PATH, tu.TRADING_UNIVERSE_PATH,
+                                        f"Aggiorna universo trading - {dt.date.today().isoformat()}")
+        (st.success if ok else st.error)(msg)
+
+
+def _cached_tradeability(symbol: str) -> dict | None:
+    """Technical Tradeability Score per un singolo titolo, memorizzato per
+    la sessione: il calcolo scarica fino a 2 anni di storico, quindi non
+    va rifatto ad ogni interazione con la pagina (cambio orizzonte,
+    apertura di un expander, ecc.). La tradabilità cambia nel tempo ma su
+    scala di settimane, non di minuti."""
+    cache = st.session_state.setdefault("_tts_by_symbol", {})
+    if symbol not in cache:
+        try:
+            cache[symbol] = trd.compute_tradeability(symbol)
+        except Exception:
+            cache[symbol] = None
+    return cache[symbol]
+
+
+def _render_tradeability_badge(symbol: str):
+    """Riga compatta con TTS, banda ed eventuale esclusione hard sul
+    titolo analizzato — il verdetto di idoneità strutturale accanto
+    all'analisi di timing, senza dover cambiare tab. La scomposizione
+    completa nei sei sub-score resta nella tab Idoneità al Trading."""
+    result = _cached_tradeability(symbol)
+    if not result or not result.get("computable"):
+        motivo = result.get("reason") if result else "calcolo non riuscito"
+        st.caption(f"Technical Tradeability Score non calcolabile: {motivo}")
+        return
+
+    parts = [badge(f"TTS {result['tts']:.0f}/100", _tts_band_badge_kind(result["band"])),
+             badge(result["band"], _tts_band_badge_kind(result["band"]))]
+    if result["hard_excluded"]:
+        parts.append(badge("ESCLUSIONE HARD", "bad"))
+    if not result["tradable_on_broker"]:
+        parts.append(badge("solo backtest", "info"))
+    st.markdown("**Idoneità al trading tecnico**<br>" + " ".join(parts), unsafe_allow_html=True)
+
+    caption = (f"Confidenza {result['confidence']:.2f}. Misura quanto lo strumento è strutturalmente "
+               "adatto a un sistema trend-following — non è un segnale di acquisto.")
+    if result["hard_excluded"]:
+        caption += " Esclusione hard: " + "; ".join(result["exclusion_reasons"]) + "."
+    st.caption(caption)
+
+
 def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | None = None,
-                            entry_label: str = "prezzo di riferimento", default_horizon: str = "medio"):
+                            entry_label: str = "prezzo di riferimento", default_horizon: str = "medio",
+                            show_tradeability: bool = False):
     """Blocco completo per un ticker: intestazione, orizzonte temporale,
     Directional Score + Agreement Index, grafico+oscillatori+volume,
     contesto sul prezzo di ingresso (se fornito), analisi sezionata con
     flag tematici e sintesi finale, piano operativo. Riutilizzato
-    identico dalle tre sezioni della pagina."""
+    identico dalle sezioni della pagina.
+
+    `show_tradeability` aggiunge il badge di idoneità strutturale al
+    trading (Technical Tradeability Score): attivo nelle sezioni orientate
+    al trading — Preferiti e Universo Trading — e spento in Portafoglio e
+    Cerca, dove aggiungerebbe un download di 2 anni di storico a ogni
+    apertura senza essere il motivo per cui stai guardando quel titolo."""
     info = dp.get_info(symbol)
     st.subheader(f"{info.get('name', symbol)} ({symbol})")
 
@@ -195,6 +258,10 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         "Agreement Index corretto per l'allineamento tra orizzonti (stima editoriale interna, non un "
         "indicatore validato da backtest)."
     )
+    if show_tradeability:
+        with st.container(border=True):
+            _render_tradeability_badge(symbol)
+
     if alignment["status"] == "DISCORDE":
         st.warning(
             f"Coerenza interna all'orizzonte {horizon}: {synthesis['A']:.2f} — ma il quadro è discorde "
@@ -312,12 +379,46 @@ def _tts_band_badge_kind(band: str) -> str:
     }.get(band, "info")
 
 
+def _portfolio_tickers() -> list[str]:
+    if not os.path.exists(PORTFOLIO_PATH):
+        return []
+    positions = pf.load_portfolio(PORTFOLIO_PATH)
+    if "category" in positions.columns:
+        positions = positions[positions["category"] != CASH_CATEGORY]
+    return sorted(positions["ticker"].unique()) if not positions.empty else []
+
+
+SCOPE_PORTFOLIO = "Portafoglio"
+SCOPE_FAVORITES = "Preferiti"
+SCOPE_UNIVERSE = "Universo Trading"
+
+SCOPE_EMPTY_HINT = {
+    SCOPE_PORTFOLIO: "Nessun titolo in portafoglio: aggiungine dal Registro Transazioni.",
+    SCOPE_FAVORITES: "Nessun titolo nei preferiti: aggiungine dalla tab Preferiti o da Cerca.",
+    SCOPE_UNIVERSE: "Universo Trading vuoto: vaglia i candidati qui con un altro ambito, poi "
+                     "promuovi i migliori con il pulsante di inserimento nel dettaglio.",
+}
+
+
+def _tickers_for_scope(scope: str) -> list[str]:
+    if scope == SCOPE_PORTFOLIO:
+        return _portfolio_tickers()
+    if scope == SCOPE_FAVORITES:
+        watch_df_trd = wl.load_watchlist(WATCHLIST_PATH)
+        return sorted(watch_df_trd["ticker"].unique()) if not watch_df_trd.empty else []
+    return tu.tickers(tu.load_universe())
+
+
 def _render_tradeability_section():
-    """Tabella dell'universo di trading (portafoglio + preferiti) ordinata
-    per Technical Tradeability Score, con filtro classe e dettaglio per
-    titolo — stesso pattern (ranking + dettaglio) usato dalla pagina
-    Fattori, applicato qui ai sei criteri di idoneità tecnica invece che
-    ai 5 fattori accademici."""
+    """Classifica per Technical Tradeability Score sull'ambito scelto
+    (Portafoglio, Preferiti o Universo Trading), con filtro classe e
+    dettaglio per titolo — stesso pattern (ranking + dettaglio) usato
+    dalla pagina Fattori, applicato qui ai sei criteri di idoneità
+    tecnica invece che ai 5 fattori accademici.
+
+    Il flusso previsto è: vaglia i candidati su Portafoglio/Preferiti,
+    promuovi i migliori nell'Universo Trading dal dettaglio, poi rilancia
+    la classifica sull'Universo Trading per monitorarlo nel tempo."""
     st.caption(
         "Quanto uno strumento è STRUTTURALMENTE adatto a un sistema di trading tecnico "
         "trend-following — non è un segnale di acquisto/vendita, ma una misura di idoneità "
@@ -325,31 +426,26 @@ def _render_tradeability_section():
         "nell'universo di trading e cosa testare per primo in backtest/forward test."
     )
 
-    positions = pd.DataFrame()
-    if os.path.exists(PORTFOLIO_PATH):
-        positions = pf.load_portfolio(PORTFOLIO_PATH)
-        if "category" in positions.columns:
-            positions = positions[positions["category"] != CASH_CATEGORY]
-    portfolio_tickers = sorted(positions["ticker"].unique()) if not positions.empty else []
-
-    watch_df_trd = wl.load_watchlist(WATCHLIST_PATH)
-    watchlist_tickers = sorted(watch_df_trd["ticker"].unique()) if not watch_df_trd.empty else []
-
-    target_tickers = sorted(set(portfolio_tickers) | set(watchlist_tickers))
+    scope = st.selectbox(
+        "Ambito dello screening", [SCOPE_PORTFOLIO, SCOPE_FAVORITES, SCOPE_UNIVERSE],
+        index=1, key="tts_scope",
+        help="Su quale lista calcolare la classifica di idoneità al trading.",
+    )
+    target_tickers = _tickers_for_scope(scope)
     if not target_tickers:
-        st.info(
-            "Nessun titolo in portafoglio o nei preferiti: aggiungine dal Registro Transazioni "
-            "o dalla tab Preferiti/Cerca per vedere qui la loro idoneità al trading tecnico."
-        )
+        st.info(SCOPE_EMPTY_HINT[scope])
         return
 
-    st.caption(f"Titoli considerati: {', '.join(target_tickers)}")
+    st.caption(f"Titoli considerati ({scope}): {', '.join(target_tickers)}")
 
     if st.button("Calcola idoneità al trading", key="tts_compute"):
-        with st.spinner("Calcolo Technical Tradeability Score sui titoli dell'universo..."):
-            st.session_state["_tts_report"] = trd.build_tradeability_report(target_tickers)
+        with st.spinner(f"Calcolo Technical Tradeability Score su {scope}..."):
+            reports = st.session_state.setdefault("_tts_reports", {})
+            reports[scope] = trd.build_tradeability_report(target_tickers)
 
-    report = st.session_state.get("_tts_report")
+    # Il risultato è memorizzato per ambito: cambiare ambito non deve mai
+    # mostrare la classifica di un'altra lista come se fosse quella scelta.
+    report = st.session_state.get("_tts_reports", {}).get(scope)
     if not report:
         st.info(
             "Il calcolo richiede dati storici estesi (fino a 2 anni per titolo) e non viene "
@@ -426,6 +522,30 @@ def _render_tradeability_section():
               "ok" if detail["tradable_on_broker"] else "info"),
         unsafe_allow_html=True,
     )
+
+    # Promozione all'Universo Trading: congela il TTS appena calcolato
+    # insieme alla data, così più avanti si può confrontare col punteggio
+    # attuale e vedere se la tradabilità è peggiorata dall'inserimento.
+    universe_df = tu.load_universe()
+    if tu.is_in_universe(universe_df, detail_symbol):
+        frozen = tu.tts_at_add_for(universe_df, detail_symbol)
+        frozen_date = tu.tts_date_for(universe_df, detail_symbol)
+        st.caption(
+            f"{detail_symbol} è già nell'Universo Trading"
+            + (f" (TTS {frozen:.0f} congelato il {frozen_date})." if frozen is not None and frozen_date
+               else ".")
+        )
+    else:
+        promote_note = st.text_input("Nota per l'Universo Trading (opzionale)",
+                                      key="tts_promote_note")
+        if st.button(f"Aggiungi {detail_symbol} all'Universo Trading", key="tts_promote"):
+            universe_df = tu.add_ticker(universe_df, detail_symbol, promote_note,
+                                         tts_at_add=detail["tts"])
+            tu.save_universe(universe_df)
+            _push_trading_universe()
+            st.success(f"{detail_symbol} aggiunto all'Universo Trading (TTS {detail['tts']:.0f} congelato).")
+            st.rerun()
+
     if detail["asset_class"] == "EQUITY":
         st.caption(
             f"Prossima data earnings nota: {detail.get('next_earnings_date') or 'n/d'}. Indipendentemente "
@@ -485,8 +605,102 @@ CRITERION_SHORT_LABELS = {
 }
 
 
-tab_portfolio, tab_favorites, tab_search, tab_tradeability = st.tabs(
-    ["Portafoglio", "Preferiti", "Cerca", "Idoneità al Trading"]
+def _render_trading_universe_section():
+    """Universo Trading: la short-list dei titoli selezionati per il
+    trading tecnico, distinta dai Preferiti (src/trading_universe.py
+    spiega perché sono due liste separate e non un flag sulla stessa).
+
+    Oltre alla gestione della lista, confronta il TTS congelato
+    all'inserimento con quello attuale: è il modo per accorgersi che uno
+    strumento è diventato meno tradabile da quando l'hai selezionato,
+    senza doverlo ricontrollare a memoria."""
+    st.caption(
+        "La tua short-list per il trading tecnico: i titoli che hai giudicato strutturalmente "
+        "adatti, tipicamente dopo averli vagliati col Technical Tradeability Score. È una lista "
+        "distinta dai Preferiti — un'azienda che segui volentieri può essere un pessimo candidato "
+        "di trading, e un ETF poco interessante da seguire può essere un ottimo strumento tecnico."
+    )
+
+    universe_df = tu.load_universe()
+
+    st.markdown("**Gestisci l'Universo Trading**")
+    with st.form("add_universe_form", clear_on_submit=True):
+        u1, u2, u3 = st.columns([2, 3, 1])
+        new_ticker = u1.text_input("Ticker", key="tu_new_ticker")
+        new_note = u2.text_input("Nota (opzionale)", key="tu_new_note")
+        submitted = u3.form_submit_button("Aggiungi")
+    if submitted and new_ticker.strip():
+        symbol_to_add = new_ticker.strip().upper()
+        # Il TTS viene calcolato e congelato subito: un inserimento manuale
+        # senza punteggio renderebbe impossibile il confronto nel tempo.
+        with st.spinner(f"Calcolo il Technical Tradeability Score di {symbol_to_add}..."):
+            result = _cached_tradeability(symbol_to_add)
+        tts_value = result.get("tts") if result and result.get("computable") else None
+        universe_df = tu.add_ticker(universe_df, symbol_to_add, new_note, tts_at_add=tts_value)
+        tu.save_universe(universe_df)
+        _push_trading_universe()
+        if tts_value is not None:
+            st.success(f"{symbol_to_add} aggiunto (TTS {tts_value:.0f} congelato).")
+        else:
+            st.warning(f"{symbol_to_add} aggiunto, ma il TTS non è calcolabile: nessun punteggio congelato.")
+        st.rerun()
+
+    if universe_df.empty:
+        st.info(
+            "Universo Trading vuoto. Aggiungi un titolo qui sopra, oppure vaglialo prima nella tab "
+            "Idoneità al Trading e promuovilo da lì (il punteggio viene congelato automaticamente)."
+        )
+        return
+
+    st.dataframe(
+        universe_df.rename(columns={"ticker": "Ticker", "note": "Nota",
+                                     "tts_at_add": "TTS all'inserimento", "tts_date": "Congelato il"}),
+        use_container_width=True, hide_index=True, key="tu_table",
+    )
+
+    universe_tickers = tu.tickers(universe_df)
+    remove_choice = st.selectbox("Rimuovi dall'Universo Trading", ["—"] + universe_tickers,
+                                  key="tu_remove")
+    if remove_choice != "—" and st.button("Rimuovi", key="tu_remove_btn"):
+        universe_df = tu.remove_ticker(universe_df, remove_choice)
+        tu.save_universe(universe_df)
+        _push_trading_universe()
+        st.rerun()
+
+    st.divider()
+    chosen_symbol = st.selectbox("Analizza un titolo dell'Universo Trading", universe_tickers,
+                                  key="tu_ticker")
+
+    note = tu.note_for(universe_df, chosen_symbol)
+    if note:
+        st.caption(f"Nota: {note}")
+
+    frozen = tu.tts_at_add_for(universe_df, chosen_symbol)
+    frozen_date = tu.tts_date_for(universe_df, chosen_symbol)
+    if frozen is not None:
+        current_result = _cached_tradeability(chosen_symbol)
+        current = current_result.get("tts") if current_result and current_result.get("computable") else None
+        if current is not None:
+            delta = current - frozen
+            c1, c2 = st.columns(2)
+            c1.metric("TTS all'inserimento", f"{frozen:.0f}/100",
+                      help=f"Congelato il {frozen_date}." if frozen_date else None)
+            c2.metric("TTS attuale", f"{current:.0f}/100", f"{delta:+.0f}")
+            if delta <= -10:
+                st.warning(
+                    f"La tradabilità di {chosen_symbol} è peggiorata di {abs(delta):.0f} punti dall'inserimento"
+                    + (f" ({frozen_date})" if frozen_date else "") +
+                    ". Vale la pena rivedere se ha ancora senso tenerlo nell'universo."
+                )
+        else:
+            st.caption(f"TTS all'inserimento: {frozen:.0f}/100"
+                       + (f" (congelato il {frozen_date})." if frozen_date else "."))
+
+    render_ticker_analysis(chosen_symbol, key_prefix="tu", show_tradeability=True)
+
+
+tab_portfolio, tab_favorites, tab_search, tab_tradeability, tab_universe = st.tabs(
+    ["Portafoglio", "Preferiti", "Cerca", "Idoneità al Trading", "Universo Trading"]
 )
 
 with tab_portfolio:
@@ -575,7 +789,7 @@ with tab_favorites:
         chosen_fav = st.selectbox("Analizza un preferito", sorted(watch_df["ticker"].unique()), key="fav_ticker")
         ref_price = wl.reference_price_for(watch_df, chosen_fav)
         render_ticker_analysis(chosen_fav, key_prefix="fav", entry_price=ref_price,
-                                entry_label="prezzo di riferimento")
+                                entry_label="prezzo di riferimento", show_tradeability=True)
 
 with tab_search:
     symbol = st.text_input("Ticker (es. AAPL, ENI.MI, SWDA.MI, VWCE.DE)", value="AAPL",
@@ -591,6 +805,9 @@ with tab_search:
 
 with tab_tradeability:
     _render_tradeability_section()
+
+with tab_universe:
+    _render_trading_universe_section()
 
 disclaimer(
     "L'analisi tecnica descrive schemi statistici passati nei prezzi, non previsioni certe. Il "
