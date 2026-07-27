@@ -6,7 +6,14 @@ oscillatori letti nel contesto del trend, volume/OBV, pattern grafici e
 candlestick filtrati per affidabilità, e un motore di sintesi a due
 numeri distinti — Directional Score e Agreement Index — che separa
 esplicitamente "neutro per assenza di direzione" da "conflitto tra
-segnali", invece di appiattire tutto in un unico punteggio ambiguo."""
+segnali", invece di appiattire tutto in un unico punteggio ambiguo.
+
+Gerarchia dei timeframe (Prompt_Cowork_Gerarchia_Orizzonti.md, §0.2 della
+spec Murphy): ogni analisi calcola sempre anche l'orizzonte immediatamente
+superiore e mostra un indicatore di ALLINEAMENTO TRA ORIZZONTI
+(CONCORDE/DISCORDE/NEUTRO/N/D), una sintesi compatta sui tre orizzonti e
+un'etichetta CONTRO-TREND sui piani operativi che vanno contro il trend
+dell'orizzonte superiore — senza mai sopprimerli."""
 import datetime as dt
 import os
 
@@ -30,7 +37,10 @@ st.caption(
     "Portafoglio e Preferiti sono già pronti da analizzare, senza doverli ricercare — usa Cerca "
     "per qualsiasi altro titolo. Il motore riconcilia trend strutturale e medie mobili prima di dare "
     "un verdetto, e la sintesi finale mostra due numeri distinti — Directional Score e Agreement "
-    "Index — invece di un unico punteggio che confonde 'senza direzione' con 'segnali in conflitto'."
+    "Index — invece di un unico punteggio che confonde 'senza direzione' con 'segnali in conflitto'. "
+    "Gli orizzonti breve/medio/lungo non sono più calcolati in isolamento: ogni analisi confronta "
+    "sempre l'orizzonte scelto con quello immediatamente superiore (gerarchia dei timeframe, Murphy "
+    "§0.2) e segnala esplicitamente quando un piano operativo va contro il trend di fondo."
 )
 
 PORTFOLIO_PATH = "data/portfolio.csv"
@@ -49,6 +59,63 @@ def _verdict_badge_kind(verdict: str) -> str:
     if "Neutro" in verdict:
         return "info"
     return "warn"  # "Direzione debole e contrastata: cautela"
+
+
+def _alignment_badge_kind(status: str) -> str:
+    """Colori del badge di ALLINEAMENTO TRA ORIZZONTI (FIX 2 di
+    Prompt_Cowork_Gerarchia_Orizzonti.md): CONCORDE positivo, DISCORDE
+    negativo, NEUTRO come avviso (nessun conflitto ma nessuna conferma),
+    N/D informativo (orizzonte più alto o dati insufficienti)."""
+    return {"CONCORDE": "ok", "DISCORDE": "bad", "NEUTRO": "warn", "N/D": "info"}.get(status, "info")
+
+
+def _alignment_caption(horizon: str, alignment: dict) -> str:
+    """Testo generato dai valori reali dell'allineamento — mai un template
+    fisso — che indica sempre quale orizzonte superiore è di riferimento e
+    quale verdetto esprime (FIX 2), chiarendo nel caso NEUTRO che l'assenza
+    di conflitto non equivale a una conferma."""
+    status = alignment["status"]
+    sup = alignment.get("superior_horizon")
+    if status == "N/D":
+        if alignment.get("reason") == "dati_insufficienti":
+            return f"Dati storici insufficienti per calcolare l'orizzonte superiore a {horizon}."
+        return f"L'orizzonte {horizon} è il più alto della catena: nessun orizzonte superiore a cui applicare la gerarchia."
+    label = alignment["superior_verdict_label"]
+    if status == "NEUTRO":
+        return (f"Orizzonte superiore: {sup} — {label}. Nessun conflitto con l'orizzonte selezionato, ma "
+                "l'assenza di conflitto non equivale a una conferma.")
+    return f"Orizzonte superiore: {sup} — {label}."
+
+
+def _render_multi_horizon_summary(multi: dict):
+    """FIX 5: sintesi compatta multi-orizzonte, sempre visibile — primo
+    elemento che l'utente guarda per orientarsi, prima di scendere nel
+    dettaglio dell'orizzonte selezionato più sotto nella pagina."""
+    summary = tech.multi_horizon_summary(multi)
+    plan_label = {"long": "LONG", "short": "SHORT", "nessun_piano": "Nessun piano"}
+    plan_kind = {"long": "ok", "short": "bad", "nessun_piano": "info"}
+
+    st.markdown("##### Sintesi multi-orizzonte")
+    st.caption(
+        "Verdetto di trend, Directional Score e direzione del piano operativo sui tre orizzonti — "
+        "prima di scegliere quale approfondire qui sotto, guarda se concordano o divergono."
+    )
+    cols = st.columns(3)
+    for col, row in zip(cols, summary["rows"]):
+        with col:
+            st.markdown(f"**{row['label'].split(' (')[0]}**")
+            if not row.get("available"):
+                st.caption("Dati storici insufficienti su questo orizzonte.")
+                continue
+            st.markdown(
+                badge(tech.VERDICT_LABELS.get(row["trend_simple"], row["trend_simple"].capitalize()),
+                      tech.VERDICT_BADGE_KIND.get(row["trend_simple"], "info")),
+                unsafe_allow_html=True,
+            )
+            st.caption(f"Directional Score {row['D']:+.2f}")
+            st.markdown(badge(plan_label.get(row["plan_direction"], "n/d"),
+                               plan_kind.get(row["plan_direction"], "info")), unsafe_allow_html=True)
+    st.info(summary["reading"])
 
 
 def _push_watchlist():
@@ -74,8 +141,11 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
                                  index=default_idx, key=f"{key_prefix}_horizon")
     horizon = HORIZON_LABEL_TO_KEY[chosen_label]
 
-    with st.spinner("Calcolo indicatori..."):
-        snap = tech.technical_snapshot(symbol, horizon)
+    with st.spinner("Calcolo indicatori sui tre orizzonti..."):
+        multi = tech.multi_horizon_analysis(symbol)
+    snap = multi[horizon]["snapshot"]
+    alignment = multi[horizon]["alignment"]
+    superior_snap = multi[horizon]["superior_snapshot"]
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Prezzo", f"{snap['price']:,.2f}" if snap and snap.get("price") else "n/d")
@@ -85,20 +155,46 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
               if info.get("week52_low") else "n/d")
     c4.metric("P/E", f"{info.get('pe_ratio'):.1f}" if info.get("pe_ratio") else "n/d")
 
+    st.divider()
+    _render_multi_horizon_summary(multi)
+    st.divider()
+
     if snap is None:
         st.warning("Dati storici insufficienti per questo ticker/orizzonte. Prova un altro orizzonte.")
         return
 
     synthesis = snap["synthesis"]
-    d1, d2, d3 = st.columns([1, 1, 2])
+    d1, d2, d3, d4 = st.columns([1, 1, 1.3, 1.6])
     d1.metric("Directional Score", f"{synthesis['D']:+.2f}")
     d1.caption("-1 fortemente ribassista … +1 fortemente rialzista")
     d2.metric("Agreement Index", f"{synthesis['A']:.2f}")
-    d2.caption("0 = famiglie in conflitto, 1 = pienamente allineate")
+    d2.caption(
+        f"Coerenza interna all'orizzonte {horizon}: accordo solo tra le famiglie di indicatori di questo "
+        "orizzonte — non una misura di affidabilità assoluta del segnale."
+    )
     d3.markdown(f"**Verdetto**<br>{badge(synthesis['verdict'], _verdict_badge_kind(synthesis['verdict']))}",
                 unsafe_allow_html=True)
     d3.caption(f"{synthesis['n_families']} famiglie di indicatori considerate (Trend, Medie, Momentum, "
                f"Volume, Pattern, Candlestick, Volatilità).")
+    d4.markdown(
+        f"**Allineamento tra orizzonti**<br>{badge(alignment['status'], _alignment_badge_kind(alignment['status']))}",
+        unsafe_allow_html=True,
+    )
+    d4.caption(_alignment_caption(horizon, alignment))
+
+    st.caption(
+        f"Confidenza complessiva: {tech.overall_confidence(synthesis['A'], alignment['status']):.2f} — "
+        "Agreement Index corretto per l'allineamento tra orizzonti (stima editoriale interna, non un "
+        "indicatore validato da backtest)."
+    )
+    if alignment["status"] == "DISCORDE":
+        st.warning(
+            f"Coerenza interna all'orizzonte {horizon}: {synthesis['A']:.2f} — ma il quadro è discorde "
+            f"rispetto al trend di {alignment['superior_horizon']} termine "
+            f"({alignment['superior_verdict_label']}). Un Agreement Index alto qui misura solo l'accordo "
+            "tra le famiglie di indicatori di questo orizzonte, non la solidità del segnale nel quadro "
+            "complessivo tra orizzonti."
+        )
 
     if entry_price:
         ctx = tech.entry_context(snap, entry_price)
@@ -159,6 +255,7 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
         "proporne uno, invece di forzare un piano su un quadro indecidibile."
     )
     plan = tech.trade_plan(snap)
+    contro = tech.plan_alignment_warning(plan, superior_snap, alignment.get("superior_horizon"))
     if not plan or plan["bias"] == "nessun_setup":
         motivo = plan.get("reason") if plan else None
         st.info(
@@ -167,9 +264,14 @@ def render_ticker_analysis(symbol: str, key_prefix: str, entry_price: float | No
             " Aspettare un'impostazione più chiara è spesso la scelta più prudente."
         )
     else:
+        if contro:
+            st.warning(contro["text"])
         bias_kind = "ok" if plan["bias"] == "long" else "bad"
         p1, p2, p3, p4 = st.columns(4)
-        p1.markdown(f"**Impostazione**<br>{badge(plan['bias'].upper(), bias_kind)}", unsafe_allow_html=True)
+        setup_badge = badge(plan["bias"].upper(), bias_kind)
+        if contro:
+            setup_badge += " " + badge("CONTRO-TREND", "warn")
+        p1.markdown(f"**Impostazione**<br>{setup_badge}", unsafe_allow_html=True)
         p2.metric("Ingresso", f"{plan['entry']:,.2f}")
         p3.metric("Stop", f"{plan['stop']:,.2f}", f"{plan['stop'] - plan['entry']:+.2f}")
         p4.metric("Target", f"{plan['target']:,.2f}", f"{plan['target'] - plan['entry']:+.2f}")

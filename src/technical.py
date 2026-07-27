@@ -60,6 +60,47 @@ HORIZONS = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Gerarchia dei timeframe (§0.2 della spec Murphy; implementazione richiesta
+# da Prompt_Cowork_Gerarchia_Orizzonti.md). Fino a qui la gerarchia era
+# applicata solo DENTRO un singolo orizzonte (reconcile_trend: struttura di
+# swing vs allineamento medie, §2). Non esisteva alcun confronto TRA
+# orizzonti: l'app poteva mostrare un piano LONG su breve e uno SHORT su
+# medio per lo stesso titolo senza segnalare che sono in conflitto.
+#
+# Catena derivata dall'ordine di HORIZONS (breve -> medio -> lungo), non
+# hardcoded due volte: cambiare l'ordine/i nomi degli orizzonti in HORIZONS
+# aggiorna automaticamente anche la catena di gerarchia.
+# ---------------------------------------------------------------------------
+HORIZON_CHAIN: list[str] = list(HORIZONS.keys())
+SUPERIOR_HORIZON: dict[str, str | None] = {
+    h: (HORIZON_CHAIN[i + 1] if i + 1 < len(HORIZON_CHAIN) else None)
+    for i, h in enumerate(HORIZON_CHAIN)
+}
+
+# Soglia di direzionalità: sotto questa soglia un Directional Score non è
+# considerato abbastanza netto da esprimere una direzione su cui misurare
+# concordanza/conflitto tra orizzonti. Stessa soglia usata in
+# synthesize_votes() (§11) per "neutro per assenza di direzione" — un'unica
+# costante condivisa per restare coerenti tra i due usi, invece di due
+# soglie scollegate che potrebbero divergere nel tempo. Valore editoriale
+# (non backtestato), dichiarato qui esplicitamente.
+DIRECTIONALITY_THRESHOLD = 0.20
+
+# Peso editoriale, non backtestato, con cui l'allineamento tra orizzonti
+# corregge una "confidenza complessiva" distinta dall'Agreement Index
+# (FIX 3 di Prompt_Cowork_Gerarchia_Orizzonti.md: l'Agreement Index misura
+# solo la coerenza interna a un orizzonte, non deve mai essere letto da solo
+# come affidabilità assoluta del segnale). CONCORDE non penalizza, DISCORDE
+# penalizza molto di più di NEUTRO: un conflitto conclamato con l'orizzonte
+# superiore è più grave di una semplice assenza di conferma.
+ALIGNMENT_CONFIDENCE_MULTIPLIER = {
+    "CONCORDE": 1.0,
+    "NEUTRO": 0.7,
+    "DISCORDE": 0.4,
+    "N/D": 1.0,   # nessun orizzonte superiore a cui appoggiarsi: nessuna correzione
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers generici
@@ -867,7 +908,7 @@ def synthesize_votes(votes: list[dict]) -> dict:
     D = sum_dc / sum_c if sum_c > 0 else 0.0
     A = abs(sum_dc) / sum_c_absd if sum_c_absd > 1e-9 else 0.0
 
-    small_D = abs(D) < 0.20
+    small_D = abs(D) < DIRECTIONALITY_THRESHOLD
     high_A = A >= 0.60
 
     if small_D and high_A:
@@ -1526,12 +1567,38 @@ def numeric_summary(snap: dict) -> list[tuple[str, str]]:
     return rows
 
 
+# Costanti del piano operativo (§13), tutte editoriali e non backtestate —
+# dichiarate qui esplicitamente invece che come numeri "magici" sparsi nel
+# corpo della funzione (principio di trasparenza radicale sulle scelte
+# soggettive). Condivise da tutti gli orizzonti: è la stessa formula per
+# breve/medio/lungo, solo ATR e livelli S/R cambiano scala con l'orizzonte
+# (FIX 8 di Prompt_Cowork_Gerarchia_Orizzonti.md) — non serve una versione
+# diversa per orizzonte, altrimenti la spiegazione dei livelli smetterebbe
+# di essere uniforme (FIX 6).
+PLAN_MIN_AGREEMENT = 0.45           # sotto questa soglia niente piano, anche con D direzionale
+PLAN_NEAR_LEVEL_ATR_MULT = 3.0      # entro quante volte l'ATR un livello S/R è "abbastanza vicino" da ancorare lo stop
+PLAN_STOP_BUFFER_ATR_MULT = 0.5     # buffer oltre il livello S/R per lo stop (margine contro un semplice tocco)
+PLAN_NO_LEVEL_STOP_ATR_MULT = 1.5   # distanza dello stop dal prezzo quando non c'è un livello S/R abbastanza vicino
+PLAN_NO_LEVEL_TARGET_ATR_MULT = 2.0  # distanza del target dal prezzo quando non c'è resistenza/obiettivo di figura vicino
+PLAN_MIN_ACCEPTABLE_RR = 1.5        # sotto questo rapporto rischio/rendimento il piano è segnalato come sfavorevole
+
+
 def trade_plan(snap: dict | None) -> dict | None:
     """Piano operativo (§13): ingresso/stop/target su livelli oggettivi
     (S/R, ATR, obiettivi di figura). Si rifiuta di produrre un piano
     quando il quadro non è direzionale (|D| basso o A basso) — la
     disciplina esplicitamente richiesta dalla specifica, non solo quando
-    lo score puntuale è vicino a zero come prima."""
+    lo score puntuale è vicino a zero come prima.
+
+    FIX 7 (Prompt_Cowork_Gerarchia_Orizzonti.md): stop_basis e target_basis
+    devono SEMPRE dichiarare esplicitamente il tipo di livello usato, il suo
+    valore numerico e l'eventuale buffer applicato — mai un aggettivo
+    qualitativo fisso ("leggermente sopra/sotto") che può contraddire la
+    distanza reale quando include un buffer ATR non dichiarato. Bug
+    concreto risolto qui: lo stop era a `livello ± 0.5*ATR` ma il testo
+    diceva solo "leggermente sopra/sotto il livello", senza menzionare il
+    buffer — la distanza reale poteva essere ben più ampia di quanto
+    "leggermente" suggerisce per titoli volatili."""
     if not snap or snap.get("price") is None or not snap.get("atr"):
         return None
 
@@ -1540,7 +1607,7 @@ def trade_plan(snap: dict | None) -> dict | None:
     synthesis = snap["synthesis"]
     D, A = synthesis["D"], synthesis["A"]
 
-    if abs(D) < 0.20 or A < 0.45:
+    if abs(D) < DIRECTIONALITY_THRESHOLD or A < PLAN_MIN_AGREEMENT:
         return {"bias": "nessun_setup", "D": D, "A": A, "atr": atr_val, "price": price,
                 "reason": synthesis["verdict"]}
 
@@ -1556,35 +1623,61 @@ def trade_plan(snap: dict | None) -> dict | None:
 
     bias = "long" if D > 0 else "short"
 
+    def _target_from(level_candidates: list[tuple[str, float]], no_level_price: float) -> tuple[float, str]:
+        """Sceglie il candidato target più vicino tra quelli disponibili
+        (resistenza/supporto o obiettivo di figura) e genera un testo che
+        dichiara SEMPRE tipo di livello e valore numerico — mai un
+        riferimento generico "il livello più vicino" senza il numero."""
+        if level_candidates:
+            kind, level = min(level_candidates, key=lambda kv: kv[1]) if bias == "long" \
+                else max(level_candidates, key=lambda kv: kv[1])
+            basis = f"{kind} più vicina a {level:.2f}" if kind == "resistenza" else f"{kind} a {level:.2f}"
+            return level, basis
+        dist = PLAN_NO_LEVEL_TARGET_ATR_MULT * atr_val
+        level = no_level_price + dist if bias == "long" else no_level_price - dist
+        basis = (f"nessuna resistenza/obiettivo di figura entro l'orizzonte considerato: "
+                 f"{PLAN_NO_LEVEL_TARGET_ATR_MULT:g}×ATR ({dist:.2f} punti) = {level:.2f}")
+        return level, basis
+
     if bias == "long":
         nearest_sup = supports[0] if supports else None
-        if nearest_sup is not None and (price - nearest_sup) <= 3 * atr_val:
-            stop = nearest_sup - 0.5 * atr_val
-            stop_basis = f"leggermente sotto il supporto più vicino ({nearest_sup:.2f})"
+        if nearest_sup is not None and (price - nearest_sup) <= PLAN_NEAR_LEVEL_ATR_MULT * atr_val:
+            buffer = PLAN_STOP_BUFFER_ATR_MULT * atr_val
+            stop = nearest_sup - buffer
+            stop_basis = (f"supporto a {nearest_sup:.2f} − buffer di {PLAN_STOP_BUFFER_ATR_MULT:g}×ATR "
+                          f"({buffer:.2f}) = {stop:.2f}")
         else:
-            stop = price - 1.5 * atr_val
-            stop_basis = "1,5 volte l'ATR sotto il prezzo attuale (nessun supporto vicino)"
-        candidates = resistances[:1] + up_targets[:1]
-        target = min(candidates) if candidates else price + 2 * atr_val
-        target_basis = "la resistenza o l'obiettivo di figura più vicino" if candidates else "2 volte l'ATR sopra il prezzo (nessun livello vicino)"
+            dist = PLAN_NO_LEVEL_STOP_ATR_MULT * atr_val
+            stop = price - dist
+            stop_basis = (f"nessun supporto entro {PLAN_NEAR_LEVEL_ATR_MULT:g}×ATR dal prezzo: "
+                           f"{PLAN_NO_LEVEL_STOP_ATR_MULT:g}×ATR sotto il prezzo attuale ({dist:.2f} punti) = {stop:.2f}")
+        target, target_basis = _target_from(
+            [("resistenza", r) for r in resistances[:1]] + [("obiettivo di figura", t) for t in up_targets[:1]],
+            price,
+        )
         risk = price - stop
         reward = target - price
     else:
         nearest_res = resistances[0] if resistances else None
-        if nearest_res is not None and (nearest_res - price) <= 3 * atr_val:
-            stop = nearest_res + 0.5 * atr_val
-            stop_basis = f"leggermente sopra la resistenza più vicina ({nearest_res:.2f})"
+        if nearest_res is not None and (nearest_res - price) <= PLAN_NEAR_LEVEL_ATR_MULT * atr_val:
+            buffer = PLAN_STOP_BUFFER_ATR_MULT * atr_val
+            stop = nearest_res + buffer
+            stop_basis = (f"resistenza a {nearest_res:.2f} + buffer di {PLAN_STOP_BUFFER_ATR_MULT:g}×ATR "
+                          f"({buffer:.2f}) = {stop:.2f}")
         else:
-            stop = price + 1.5 * atr_val
-            stop_basis = "1,5 volte l'ATR sopra il prezzo attuale (nessuna resistenza vicina)"
-        candidates = supports[:1] + down_targets[:1]
-        target = max(candidates) if candidates else price - 2 * atr_val
-        target_basis = "il supporto o l'obiettivo di figura più vicino" if candidates else "2 volte l'ATR sotto il prezzo (nessun livello vicino)"
+            dist = PLAN_NO_LEVEL_STOP_ATR_MULT * atr_val
+            stop = price + dist
+            stop_basis = (f"nessuna resistenza entro {PLAN_NEAR_LEVEL_ATR_MULT:g}×ATR dal prezzo: "
+                           f"{PLAN_NO_LEVEL_STOP_ATR_MULT:g}×ATR sopra il prezzo attuale ({dist:.2f} punti) = {stop:.2f}")
+        target, target_basis = _target_from(
+            [("supporto", s) for s in supports[:1]] + [("obiettivo di figura", t) for t in down_targets[:1]],
+            price,
+        )
         risk = stop - price
         reward = price - target
 
     rr = (reward / risk) if risk and risk > 0 else None
-    rr_unfavorable = bool(rr is not None and rr < 1.5)
+    rr_unfavorable = bool(rr is not None and rr < PLAN_MIN_ACCEPTABLE_RR)
 
     return {
         "bias": bias, "D": D, "A": A, "atr": atr_val, "price": price,
@@ -1595,14 +1688,222 @@ def trade_plan(snap: dict | None) -> dict | None:
     }
 
 
+# ---------------------------------------------------------------------------
+# Gerarchia dei timeframe cross-orizzonte (Prompt_Cowork_Gerarchia_Orizzonti.md,
+# FIX 1/2/4/5) — a differenza di reconcile_trend() (§2), che concilia
+# struttura di swing e medie DENTRO lo stesso orizzonte, queste funzioni
+# confrontano l'orizzonte selezionato con quello immediatamente superiore.
+# ---------------------------------------------------------------------------
+
+def classify_horizon_alignment(selected_snap: dict, superior_snap: dict | None,
+                                superior_horizon: str | None) -> dict:
+    """FIX 2: rapporto tra il verdetto di trend dell'orizzonte selezionato
+    e quello dell'orizzonte immediatamente superiore nella catena.
+
+    Stati:
+      CONCORDE  la direzione del verdetto di trend (trend_detail.verdict_simple)
+                dell'orizzonte selezionato coincide con quella del superiore.
+      DISCORDE  le due direzioni sono opposte (rialzista vs ribassista).
+      NEUTRO    il superiore è laterale o il suo Directional Score è sotto
+                DIRECTIONALITY_THRESHOLD (nessun trend abbastanza netto da
+                confermare o contraddire) — oppure l'orizzonte selezionato
+                stesso è laterale: in questo caso non c'è una direzione da
+                confrontare, quindi non è né conferma né conflitto. Questo
+                secondo ramo non è scritto esplicitamente nella spec (che
+                parla solo del superiore laterale/debole): è una scelta
+                editoriale dichiarata qui per coprire in modo generale il
+                caso "selezionato laterale, superiore direzionale", che
+                altrimenti non rientrerebbe né in CONCORDE né in DISCORDE.
+      N/D       l'orizzonte selezionato è il più alto della catena (nessun
+                superiore possibile) oppure i dati del superiore non sono
+                disponibili (mai inventare un verdetto sui dati mancanti).
+    """
+    base = {
+        "status": "N/D", "superior_horizon": superior_horizon,
+        "superior_label": HORIZONS[superior_horizon]["label"] if superior_horizon else None,
+        "superior_verdict_label": None, "superior_trend_simple": None, "superior_D": None,
+        "reason": None,
+    }
+    if superior_horizon is None:
+        base["reason"] = "orizzonte_massimo"
+        return base
+    if superior_snap is None:
+        base["reason"] = "dati_insufficienti"
+        return base
+
+    sel_trend = selected_snap["trend"]
+    sup_trend = superior_snap["trend"]
+    sup_D = superior_snap["synthesis"]["D"]
+    sup_verdict_label = superior_snap["trend_detail"]["verdict_label"]
+
+    if sup_trend == "laterale" or abs(sup_D) < DIRECTIONALITY_THRESHOLD:
+        status = "NEUTRO"
+    elif sel_trend == "laterale":
+        status = "NEUTRO"
+    elif sel_trend == sup_trend:
+        status = "CONCORDE"
+    else:
+        status = "DISCORDE"
+
+    return {
+        "status": status, "superior_horizon": superior_horizon,
+        "superior_label": HORIZONS[superior_horizon]["label"],
+        "superior_verdict_label": sup_verdict_label,
+        "superior_trend_simple": sup_trend, "superior_D": sup_D,
+        "reason": None,
+    }
+
+
+def overall_confidence(agreement_index: float, alignment_status: str) -> float:
+    """FIX 3 ("valutare l'introduzione di una confidenza complessiva
+    distinta"): combina Agreement Index (coerenza interna all'orizzonte,
+    §11) e allineamento tra orizzonti (gerarchia, §0.2) in un unico numero
+    dichiaratamente derivato — non un nuovo indicatore indipendente. Pesi in
+    ALIGNMENT_CONFIDENCE_MULTIPLIER, editoriali e non backtestati."""
+    mult = ALIGNMENT_CONFIDENCE_MULTIPLIER.get(alignment_status, 1.0)
+    return round(max(0.0, min(1.0, agreement_index * mult)), 3)
+
+
+def plan_alignment_warning(plan: dict | None, superior_snap: dict | None,
+                            superior_horizon: str | None) -> dict | None:
+    """FIX 4: se il piano operativo sull'orizzonte selezionato punta in
+    direzione opposta al trend dell'orizzonte superiore, lo segnala come
+    CONTRO-TREND — MAI lo sopprime. Nessun avviso se: non c'è un piano
+    reale (long/short), non esiste un orizzonte superiore (N/D), o il
+    superiore non ha una direzione abbastanza netta (stessa soglia di
+    classify_horizon_alignment) per poter essere "contraddetto"."""
+    if not plan or plan.get("bias") not in ("long", "short"):
+        return None
+    if superior_horizon is None or superior_snap is None:
+        return None
+
+    sup_trend = superior_snap["trend"]
+    sup_D = superior_snap["synthesis"]["D"]
+    if sup_trend == "laterale" or abs(sup_D) < DIRECTIONALITY_THRESHOLD:
+        return None
+
+    plan_direction = "rialzista" if plan["bias"] == "long" else "ribassista"
+    if plan_direction == sup_trend:
+        return None
+
+    sup_label = superior_snap["trend_detail"]["verdict_label"]
+    text = (
+        f"Piano contro-trend: la direzione del piano ({plan['bias'].upper()}) è opposta al trend "
+        f"{sup_trend} dell'orizzonte {superior_horizon} ({sup_label}). Si tratta di un rimbalzo/pullback "
+        f"sull'orizzonte selezionato, non di un'inversione confermata sull'orizzonte superiore: rischio "
+        f"strutturalmente più alto e spazio di movimento ridotto prima del livello che ha generato il "
+        f"trend dominante di {superior_horizon} termine."
+    )
+    if plan.get("rr_unfavorable") and plan.get("risk_reward"):
+        text += (
+            f" Il rapporto rischio/rendimento di {plan['risk_reward']:.2f} sotto la soglia di "
+            f"accettabilità non è una coincidenza: è la conseguenza attesa del poco spazio disponibile "
+            f"prima di quel livello dominante."
+        )
+
+    return {"is_contro_trend": True, "text": text, "superior_horizon": superior_horizon,
+            "superior_trend": sup_trend, "superior_label": sup_label}
+
+
 def multi_horizon_analysis(symbol: str) -> dict:
-    """Analisi sui tre orizzonti temporali in un'unica chiamata."""
+    """Analisi sui tre orizzonti temporali in un'unica chiamata. Calcola
+    sempre anche l'allineamento con l'orizzonte immediatamente superiore
+    (FIX 1) riusando gli snapshot già calcolati per gli altri orizzonti —
+    nessuna chiamata di rete aggiuntiva rispetto al calcolo separato dei tre
+    orizzonti."""
+    snaps = {h: technical_snapshot(symbol, h) for h in HORIZON_CHAIN}
     out = {}
-    for h in HORIZONS:
-        snap = technical_snapshot(symbol, h)
+    for h in HORIZON_CHAIN:
+        snap = snaps[h]
+        sup_key = SUPERIOR_HORIZON[h]
+        superior_snap = snaps.get(sup_key) if sup_key else None
+        if snap is None:
+            alignment = {
+                "status": "N/D", "superior_horizon": sup_key,
+                "superior_label": HORIZONS[sup_key]["label"] if sup_key else None,
+                "superior_verdict_label": None, "superior_trend_simple": None,
+                "superior_D": None, "reason": "dati_insufficienti",
+            }
+        else:
+            alignment = classify_horizon_alignment(snap, superior_snap, sup_key)
         out[h] = {
             "snapshot": snap,
             "synthesis": snap.get("synthesis") if snap else None,
             "interpretation": interpret(snap),
+            "alignment": alignment,
+            "superior_snapshot": superior_snap,
         }
     return out
+
+
+def _build_hierarchy_reading(rows: list[dict]) -> str:
+    """FIX 5: riga di lettura complessiva generata dai valori reali (mai da
+    template fissi con parole fisse) che applica la gerarchia dei timeframe.
+    Copre esplicitamente i due casi d'esempio della spec (breve discorde dal
+    medio, medio discorde dal lungo) e il caso di piena concordanza; per le
+    combinazioni non esemplificate (es. NEUTRO in uno dei due confronti)
+    genera una frase equivalente invece di lasciare la sintesi silenziosa —
+    scelta editoriale dichiarata, dato che la spec fornisce solo 3 esempi."""
+    by_h = {r["horizon"]: r for r in rows}
+    if not all(by_h.get(h, {}).get("available") for h in HORIZON_CHAIN):
+        return "Dati insufficienti su almeno un orizzonte: sintesi multi-orizzonte non completa."
+
+    breve, medio, lungo = by_h["breve"], by_h["medio"], by_h["lungo"]
+    align_breve = breve["alignment"]["status"]   # breve vs medio
+    align_medio = medio["alignment"]["status"]   # medio vs lungo
+
+    if align_breve == "CONCORDE" and align_medio == "CONCORDE":
+        direzione = medio["trend_simple"]
+        return f"Tutti gli orizzonti concordano: quadro {direzione} su breve, medio e lungo."
+
+    parts: list[str] = []
+    if align_breve == "DISCORDE":
+        parts.append(
+            f"Rimbalzo di breve dentro un trend {medio['trend_simple']} di medio termine "
+            f"({medio['verdict_label'].lower()})."
+        )
+    elif align_breve == "NEUTRO":
+        parts.append(
+            "Il breve termine non conferma né contraddice il medio: nessuna spinta di breve "
+            "abbastanza netta da leggere il quadro in un senso o nell'altro."
+        )
+
+    if align_medio == "DISCORDE":
+        parts.append("Possibile inversione di medio termine contro il trend di lungo: attendere conferma.")
+    elif align_medio == "NEUTRO":
+        parts.append(
+            f"Il medio termine non conferma né contraddice il lungo (trend di lungo "
+            f"{lungo['trend_simple']}): nessuna conferma, ma nemmeno un conflitto in atto."
+        )
+
+    if not parts:
+        parts.append(
+            f"Quadro misto: breve {breve['trend_simple']}, medio {medio['trend_simple']}, "
+            f"lungo {lungo['trend_simple']}."
+        )
+    return " ".join(parts)
+
+
+def multi_horizon_summary(multi: dict) -> dict:
+    """FIX 5: sintesi compatta multi-orizzonte sempre visibile — per
+    ciascun orizzonte: verdetto di trend, Directional Score, direzione del
+    piano operativo (o "nessun piano" se il quadro non è direzionale) — più
+    una riga di lettura complessiva che applica la gerarchia dei timeframe."""
+    rows = []
+    for h in HORIZON_CHAIN:
+        entry = multi.get(h) or {}
+        snap = entry.get("snapshot")
+        if snap is None:
+            rows.append({"horizon": h, "label": HORIZONS[h]["label"], "available": False,
+                          "alignment": entry.get("alignment")})
+            continue
+        plan = trade_plan(snap)
+        plan_direction = plan["bias"] if plan and plan.get("bias") in ("long", "short") else "nessun_piano"
+        rows.append({
+            "horizon": h, "label": HORIZONS[h]["label"], "available": True,
+            "trend_simple": snap["trend"], "verdict_label": snap["trend_detail"]["verdict_label"],
+            "D": snap["synthesis"]["D"], "A": snap["synthesis"]["A"],
+            "plan_direction": plan_direction, "alignment": entry.get("alignment"),
+        })
+
+    return {"rows": rows, "reading": _build_hierarchy_reading(rows)}

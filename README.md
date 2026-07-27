@@ -32,6 +32,8 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
+- `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), più un AppTest sulla pagina Analisi Tecnica
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
@@ -285,12 +287,18 @@ l'analisi anche per il trading di breve periodo, costruito sul motore
 D/A — se `|D|` è troppo piccolo o `A` è troppo basso (quadro neutro o in
 conflitto), il piano viene **rifiutato esplicitamente** invece di
 proporre un'operazione senza base. Quando c'è un'impostazione (long/
-short), lo stop è ancorato al supporto/resistenza più vicino (con
-margine ATR) o a un multiplo dell'ATR se non c'è un livello vicino; il
-target è il livello opposto più vicino o l'obiettivo di una figura di
-prezzo rilevata; viene mostrato il rapporto rischio/rendimento, con un
-avviso esplicito se è sfavorevole (sotto 1.5). È uno schema costruito su
-regole tecniche oggettive, non un ordine pronto da eseguire — il
+short), lo stop è ancorato al supporto/resistenza più vicino con un
+buffer di 0,5×ATR, oppure a 1,5×ATR dal prezzo se non c'è un livello
+abbastanza vicino; il target è il livello opposto più vicino (o
+l'obiettivo di una figura di prezzo rilevata, se più vicino) oppure
+2×ATR dal prezzo. La spiegazione mostrata sotto il piano (**"Stop basato
+su... / Target basato su..."**) dichiara sempre il tipo di livello usato,
+il suo valore numerico e l'eventuale buffer ATR applicato — mai un
+aggettivo generico come "leggermente sopra/sotto" che potrebbe
+contraddire la distanza reale quando include un buffer non dichiarato.
+Viene mostrato anche il rapporto rischio/rendimento, con un avviso
+esplicito se è sfavorevole (sotto 1,5). È uno schema costruito su regole
+tecniche oggettive, non un ordine pronto da eseguire — il
 dimensionamento della posizione resta una scelta tua.
 
 I tre orizzonti temporali (breve/medio/lungo) usano parametri diversi —
@@ -300,6 +308,48 @@ dati sono settimanali), medie mobili più lunghe per l'investimento di
 lungo periodo — così puoi cambiare la profondità dell'analisi (grafico,
 sezioni, sintesi e piano operativo insieme) in base al tipo di decisione,
 senza lasciare la pagina.
+
+**Gerarchia dei timeframe**: fino a questa revisione i tre orizzonti
+venivano calcolati **in isolamento** — l'app poteva mostrare un piano
+LONG su breve e uno SHORT su medio per lo stesso titolo senza segnalare
+che sono in conflitto. Ora, qualunque orizzonte tu scelga, l'app calcola
+sempre anche il verdetto di trend dell'orizzonte **immediatamente
+superiore** (breve → medio → lungo; sul lungo termine non esiste un
+superiore) e li confronta in un nuovo indicatore, **Allineamento tra
+orizzonti**, mostrato con pari evidenza accanto al Verdetto:
+
+- **CONCORDE** — la direzione dell'orizzonte scelto coincide con quella del superiore.
+- **DISCORDE** — le due direzioni sono opposte: un segnale di breve contro il trend di fondo è un *pullback/rimbalzo*, non un'inversione, finché l'orizzonte superiore non lo conferma (principio di Murphy, §0.2 della spec).
+- **NEUTRO** — l'orizzonte superiore è laterale o non abbastanza direzionale da poter essere confermato o contraddetto: nessun conflitto segnalato, ma l'app chiarisce sempre che l'assenza di conflitto non equivale a una conferma.
+- **N/D** — sei già sull'orizzonte più alto della catena (lungo termine): nessuna gerarchia da applicare.
+
+Una **sintesi compatta multi-orizzonte**, sempre visibile in cima
+all'analisi di ogni titolo, mostra verdetto, Directional Score e
+direzione del piano operativo per tutti e tre gli orizzonti insieme, con
+una riga di lettura generata dai valori reali (es. "Rimbalzo di breve
+dentro un trend ribassista di medio termine"), prima ancora di scegliere
+quale orizzonte approfondire nel dettaglio sotto.
+
+Quando il piano operativo dell'orizzonte scelto va nella direzione
+opposta al trend dell'orizzonte superiore, viene etichettato
+**CONTRO-TREND** con un avviso esplicito sopra il piano — **il piano non
+viene mai soppresso**: resta il diritto dell'utente di vederlo, dato che
+ha scelto quell'orizzonte. L'avviso dichiara la natura del movimento
+(rimbalzo, non inversione), il verdetto dell'orizzonte superiore
+contraddetto, e — se il rapporto rischio/rendimento è anche sfavorevole —
+collega esplicitamente i due segnali: uno spazio ridotto prima del
+livello dominante non è una coincidenza quando si opera contro-trend.
+
+L'**Agreement Index** resta, per costruzione, una misura di **coerenza
+interna al singolo orizzonte** (accordo tra le famiglie di indicatori di
+*quell'orizzonte*), mai una misura di affidabilità assoluta del segnale:
+un rimbalzo contro-trend può avere Agreement alto (tutti gli indicatori
+di breve concordano sul rimbalzo) senza che questo lo renda un segnale
+solido nel quadro complessivo. Per questo, quando l'allineamento è
+DISCORDE, la pagina affianca sempre all'Agreement Index un avviso che ne
+limita la portata, e mostra una **confidenza complessiva** distinta
+(Agreement Index corretto per l'allineamento tra orizzonti — stima
+editoriale dichiarata, non backtestata) accanto ai due numeri originali.
 
 ## Analisi Fondamentale v2.1: come funziona
 
@@ -498,6 +548,27 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # poi modifica la p
 streamlit run app.py
 ```
 
+### Test automatici
+
+```bash
+pip install pytest
+PYTHONPATH=. python -m pytest tests/
+```
+
+`tests/test_technical_hierarchy.py` copre la logica di gerarchia tra
+orizzonti (`classify_horizon_alignment`, `plan_alignment_warning`,
+`multi_horizon_summary`) e il piano operativo (`trade_plan`) su
+dizionari/serie storiche sintetiche — nessun accesso di rete richiesto.
+`tests/test_analisi_tecnica_page.py` esegue un AppTest sulla pagina
+Streamlit con dati storici sintetici (via monkeypatch di
+`src/data_provider.py`) per escludere eccezioni a runtime.
+
+Gli script `scripts/verify_axis_distribution.py` e
+`scripts/verify_horizon_scaling.py` sono verifiche manuali distinte, non
+automatizzate da GitHub Actions: richiedono accesso di rete reale a
+Yahoo Finance (yfinance) e vanno eseguiti a mano quando serve verificare
+la calibrazione su dati di mercato veri.
+
 ## Limiti da tenere presente
 
 - Dati di mercato non in tempo reale (delay Yahoo Finance).
@@ -534,6 +605,16 @@ streamlit run app.py
   come conflitto anche casi limite dove i segnali sono semplicemente
   entrambi deboli di segno opposto — un giudizio tecnicamente corretto
   ma da leggere col buon senso, non come oracolo.
+- Allo stesso modo, la soglia di direzionalità usata per l'Allineamento
+  tra orizzonti (`|D| < 0,20` sull'orizzonte superiore), i pesi della
+  confidenza complessiva (CONCORDE 1,0 / NEUTRO 0,7 / DISCORDE 0,4) e i
+  moltiplicatori ATR del piano operativo (buffer 0,5×, stop 1,5×, target
+  2×, "livello vicino" entro 3×ATR) sono costanti editoriali dichiarate
+  esplicitamente nel codice (`src/technical.py`), non backtestate: buoni
+  punti di partenza ragionevoli, non soglie ottimizzate su dati storici.
+  `scripts/verify_horizon_scaling.py` verifica solo che lo *scaling* per
+  orizzonte funzioni (le ampiezze crescono da breve a lungo), non che i
+  valori assoluti siano ottimali.
 - Il pulsante "Scansiona preferiti" in Analisi Tecnica resta solo in-app
   (calcolato al momento in cui apri la pagina). Gli **alert email**
   (sezione Impostazioni Alert e Report) sono invece un servizio separato
