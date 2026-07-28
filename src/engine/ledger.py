@@ -39,6 +39,14 @@ class OpenPosition:
     mae_r: float = 0.0
     mfe_r: float = 0.0
     bars_held: int = 0
+    # --- Campi puramente diagnostici -------------------------------------
+    # Registrati per poter rispondere a "dove si perde valore?", MAI letti
+    # dalla logica decisionale: aggiungerli non cambia di una virgola quali
+    # trade vengono aperti o chiusi.
+    planned_rr: float | None = None
+    rr_unfavorable: bool | None = None
+    stop_source: str | None = None
+    target_source: str | None = None
 
     @property
     def notional_eur(self) -> float:
@@ -69,6 +77,12 @@ class ClosedTrade:
     mfe_r: float
     bars_held: int
     gapped_exit: bool
+    # --- Campi puramente diagnostici (vedi OpenPosition) ------------------
+    target: float | None = None
+    planned_rr: float | None = None
+    rr_unfavorable: bool | None = None
+    stop_source: str | None = None
+    target_source: str | None = None
 
     @property
     def is_winner(self) -> bool:
@@ -140,6 +154,9 @@ class Ledger:
             gross_r=gross_r, net_r=net_r,
             mae_r=pos.mae_r, mfe_r=pos.mfe_r, bars_held=pos.bars_held,
             gapped_exit=gapped,
+            target=pos.target, planned_rr=pos.planned_rr,
+            rr_unfavorable=pos.rr_unfavorable,
+            stop_source=pos.stop_source, target_source=pos.target_source,
         )
         self.closed_trades.append(trade)
         return trade

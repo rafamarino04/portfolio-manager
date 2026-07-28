@@ -58,6 +58,14 @@ class PendingOrder:
     confidence: float | None
     signal_date: date
     signal_price: float     # il close su cui è nato il segnale, per diagnostica
+    # Diagnostica: rapporto rischio/rendimento pianificato, se il sistema lo
+    # riteneva sfavorevole, e da dove venivano stop e target. Nessuno di
+    # questi campi condiziona l'esecuzione — servono solo a capire, dopo,
+    # quali piani il motore ha effettivamente tradato.
+    planned_rr: float | None = None
+    rr_unfavorable: bool | None = None
+    stop_source: str | None = None
+    target_source: str | None = None
 
 
 @dataclass
@@ -205,6 +213,8 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 initial_risk_eur=sizing.initial_risk_eur, entry_cost_eur=entry_cost,
                 confidence=order.confidence, leverage=sizing.leverage,
                 currency=currencies.get(symbol), signal_date=order.signal_date,
+                planned_rr=order.planned_rr, rr_unfavorable=order.rr_unfavorable,
+                stop_source=order.stop_source, target_source=order.target_source,
             ))
 
         # --- 2. Aggiornamento e uscite sulle posizioni aperte ---
@@ -257,6 +267,8 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 symbol=symbol, direction=plan["bias"], stop=float(plan["stop"]),
                 target=float(plan["target"]), confidence=plan.get("confidence"),
                 signal_date=current_date, signal_price=float(plan["entry"]),
+                planned_rr=plan.get("risk_reward"), rr_unfavorable=plan.get("rr_unfavorable"),
+                stop_source=plan.get("stop_source"), target_source=plan.get("target_source"),
             )
 
         # --- 5. Mark-to-market di fine giornata ---

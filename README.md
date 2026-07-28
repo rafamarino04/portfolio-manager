@@ -29,7 +29,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
 - `pages/backtest.py` — **Backtest** del piano operativo dell'Analisi Tecnica sull'Universo Trading: motore event-driven bar-by-bar (`src/engine/`), esecuzione al next-bar-open, regola stop-first sull'ambiguità intrabar, gap pagati al prezzo reale, costi Trade Republic + FX, sizing a frazione fissa del rischio, metriche in EUR e in R con intervalli di Wilson, benchmark buy-and-hold ed entrata casuale, verdetto in linguaggio piano
 - `pages/forward_paper.py` — **Forward Paper Trading**: il segnale messo alla prova in tempo reale con capitale virtuale, avanzato da un job schedulato a mercato aperto. Confronto backtest vs forward, costo del ritardo di esecuzione e curva di calibrazione della confidenza
-- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`
+- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`, `diagnostics.py`
 - `src/paper_store.py` — persistenza dello stato del paper trading (posizioni aperte, trade chiusi, parametri congelati), committata nel repository dal job schedulato
 - `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
@@ -40,7 +40,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, la diagnostica che separa problema di segnale e problema di struttura, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
 - `src/persistence.py` — **persistenza dichiarata**: ogni salvataggio restituisce un esito esplicito (permanente su GitHub / solo sessione / sincronizzazione fallita) e non esiste un percorso in cui il caso non permanente sia silenzioso. Streamlit Cloud non ha disco permanente: senza il collegamento a GitHub i dati si perdono al riavvio
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
@@ -767,6 +767,50 @@ pagina lo segnala come sospetto di contaminazione, non come trionfo: il
 decadimento fuori campione è la norma (i rendimenti calano tipicamente di
 un quarto, lo Sharpe di circa un terzo).
 
+### Diagnostica: dove si perde valore
+
+Un risultato negativo, da solo, non dice se il problema sia il segnale o
+la struttura che gli sta attorno: sono due diagnosi opposte e portano a
+due lavori diversi. La sezione **Diagnostica** della pagina Backtest le
+separa, misurando i tre punti in cui il valore può andarsene.
+
+- **Costi**, letti in R e non in euro. Il costo in euro non dice nulla da
+  solo: 20 euro su un trade che rischia 500 sono irrilevanti, sugli stessi
+  50 di rischio sono letali. E il costo in R dipende dalla **distanza
+  dello stop**, non dalla dimensione del trade: con sizing a rischio fisso
+  il controvalore vale `rischio / stop%`, quindi i costi percentuali
+  crescono quando lo stop si stringe mentre il rischio in euro resta
+  fermo. In pratica `costo_in_R ≈ costo% / stop%`: uno stop al 2% su uno
+  strumento in valuta estera con l'1% di costo di andata e ritorno vale da
+  solo mezza R.
+- **Uscite**, tramite il confronto tra MFE (quanto il trade ha toccato a
+  proprio favore) e R realizzato. È il test dell'ipotesi "i target sono
+  troppo bassi": se i vincenti arrivano a 2-3R prima di chiudere a 0,8R,
+  il segnale la direzione la trova e sono le uscite a buttarla via.
+- **Geometria dei piani** effettivamente eseguiti: R:R mediano, quota di
+  trade che il sistema stesso aveva già segnalato come sfavorevoli, e
+  quota di piani caduti nel ramo di ripiego puramente ad ATR — che con i
+  parametri attuali nasce con R:R 1,33, cioè sotto la soglia minima di 1,5
+  dichiarata dal sistema.
+
+A queste si aggiunge il **test di qualità del segnale**, che isola
+l'analisi tecnica da tutto il resto: rendimento medio nelle barre
+successive a un segnale contro quello di una barra qualunque, senza stop,
+target, costi né sizing. Se dopo un segnale long il prezzo non sale più di
+quanto salga in un giorno a caso, il segnale non contiene informazione e
+nessuna correzione a valle può salvarlo. Il rendimento si misura
+dall'apertura della barra successiva, coerentemente con la regola di
+esecuzione del backtest.
+
+Il discriminante principale resta comunque il **benchmark a entrata
+casuale** già prodotto dal motore: stesse uscite, stesso sizing, stessi
+costi, cambia solo da dove viene l'ingresso.
+
+I campi diagnostici registrati su ogni trade (R:R pianificato, flag di
+sfavorevolezza, origine di stop e target) sono **solo registrati, mai
+letti dalla logica decisionale**: aggiungerli non cambia di una virgola
+quali trade vengono aperti o chiusi.
+
 ### Limiti dichiarati
 
 Orizzonti supportati: solo quelli su barre daily (`breve`, `medio`). Il
@@ -1025,6 +1069,10 @@ regressione del bug per cui la seduta di ingresso non veniva riesaminata
 una volta completa. `tests/test_calibration.py` verifica soprattutto che
 il cancello della leva NON si apra quando non deve (campione sottile,
 bande sotto soglia, confidenza che non corrisponde al risultato).
+`tests/test_diagnostics.py` costruisce insiemi di trade in cui il
+problema è noto per costruzione — solo costi, solo uscite premature, solo
+piani sfavorevoli — e verifica che la diagnosi punti al posto giusto: se
+sbagliasse, si lavorerebbe sulla cosa sbagliata per settimane.
 
 I test non scrivono mai dentro `data/`, che è versionata: l'Universo
 Trading viene rediretto su una cartella temporanea, perché un file di

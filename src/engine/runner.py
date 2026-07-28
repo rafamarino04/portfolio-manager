@@ -76,6 +76,11 @@ class FullBacktestReport:
     cost_description: str = ""
     diagnostics: list[str] = field(default_factory=list)
     configurations_tried: int = 1
+    # Storici usati, conservati per la diagnostica: il test di qualità del
+    # segnale (src/engine/diagnostics.py) deve poterli rileggere senza
+    # riscaricarli, e soprattutto deve usare ESATTAMENTE gli stessi dati su
+    # cui il backtest ha girato — altrimenti confronterebbe cose diverse.
+    histories: dict = field(default_factory=dict)
 
 
 def load_histories(symbols: list[str], period: str = DEFAULT_HISTORY_PERIOD
@@ -225,6 +230,7 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
         history_start=all_dates[0], history_end=all_dates[-1],
         cost_description=config.costs.describe(),
         diagnostics=diagnostics, configurations_tried=configurations_tried,
+        histories=histories,
     )
 
 

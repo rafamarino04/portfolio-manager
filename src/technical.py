@@ -1641,26 +1641,28 @@ def trade_plan(snap: dict | None) -> dict | None:
             kind, level = min(level_candidates, key=lambda kv: kv[1]) if bias == "long" \
                 else max(level_candidates, key=lambda kv: kv[1])
             basis = f"{kind} più vicina a {level:.2f}" if kind == "resistenza" else f"{kind} a {level:.2f}"
-            return level, basis
+            return level, basis, ("figura" if kind == "obiettivo di figura" else "livello")
         dist = PLAN_NO_LEVEL_TARGET_ATR_MULT * atr_val
         level = no_level_price + dist if bias == "long" else no_level_price - dist
         basis = (f"nessuna resistenza/obiettivo di figura entro l'orizzonte considerato: "
                  f"{PLAN_NO_LEVEL_TARGET_ATR_MULT:g}×ATR ({dist:.2f} punti) = {level:.2f}")
-        return level, basis
+        return level, basis, "atr"
 
     if bias == "long":
         nearest_sup = supports[0] if supports else None
         if nearest_sup is not None and (price - nearest_sup) <= PLAN_NEAR_LEVEL_ATR_MULT * atr_val:
             buffer = PLAN_STOP_BUFFER_ATR_MULT * atr_val
             stop = nearest_sup - buffer
+            stop_source = "livello"
             stop_basis = (f"supporto a {nearest_sup:.2f} − buffer di {PLAN_STOP_BUFFER_ATR_MULT:g}×ATR "
                           f"({buffer:.2f}) = {stop:.2f}")
         else:
             dist = PLAN_NO_LEVEL_STOP_ATR_MULT * atr_val
             stop = price - dist
+            stop_source = "atr"
             stop_basis = (f"nessun supporto entro {PLAN_NEAR_LEVEL_ATR_MULT:g}×ATR dal prezzo: "
                            f"{PLAN_NO_LEVEL_STOP_ATR_MULT:g}×ATR sotto il prezzo attuale ({dist:.2f} punti) = {stop:.2f}")
-        target, target_basis = _target_from(
+        target, target_basis, target_source = _target_from(
             [("resistenza", r) for r in resistances[:1]] + [("obiettivo di figura", t) for t in up_targets[:1]],
             price,
         )
@@ -1671,14 +1673,16 @@ def trade_plan(snap: dict | None) -> dict | None:
         if nearest_res is not None and (nearest_res - price) <= PLAN_NEAR_LEVEL_ATR_MULT * atr_val:
             buffer = PLAN_STOP_BUFFER_ATR_MULT * atr_val
             stop = nearest_res + buffer
+            stop_source = "livello"
             stop_basis = (f"resistenza a {nearest_res:.2f} + buffer di {PLAN_STOP_BUFFER_ATR_MULT:g}×ATR "
                           f"({buffer:.2f}) = {stop:.2f}")
         else:
             dist = PLAN_NO_LEVEL_STOP_ATR_MULT * atr_val
             stop = price + dist
+            stop_source = "atr"
             stop_basis = (f"nessuna resistenza entro {PLAN_NEAR_LEVEL_ATR_MULT:g}×ATR dal prezzo: "
                            f"{PLAN_NO_LEVEL_STOP_ATR_MULT:g}×ATR sopra il prezzo attuale ({dist:.2f} punti) = {stop:.2f}")
-        target, target_basis = _target_from(
+        target, target_basis, target_source = _target_from(
             [("supporto", s) for s in supports[:1]] + [("obiettivo di figura", t) for t in down_targets[:1]],
             price,
         )
@@ -1694,6 +1698,12 @@ def trade_plan(snap: dict | None) -> dict | None:
         "stop_basis": stop_basis, "target_basis": target_basis,
         "risk": round(risk, 4) if risk else None, "reward": round(reward, 4) if reward else None,
         "risk_reward": round(rr, 2) if rr else None, "rr_unfavorable": rr_unfavorable,
+        # Origine dei livelli, esposta per la diagnostica: distingue i piani
+        # ancorati a un supporto/resistenza reale da quelli caduti nel ramo
+        # di ripiego puramente ad ATR, che per costruzione nasce con
+        # R:R = PLAN_NO_LEVEL_TARGET_ATR_MULT / PLAN_NO_LEVEL_STOP_ATR_MULT,
+        # cioè sotto la soglia minima dichiarata dal sistema stesso.
+        "stop_source": stop_source, "target_source": target_source,
     }
 
 

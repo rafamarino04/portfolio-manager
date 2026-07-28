@@ -22,6 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src import trading_universe as tu
+from src.engine import diagnostics as diag
 from src.engine import metrics as mt
 from src.engine import runner
 from src.engine.core import BacktestConfig
@@ -433,6 +434,135 @@ else:
         "dalle impostazioni avanzate — ma va guardato una volta sola, dopo aver congelato i parametri."
     )
     _render_segment(report.in_sample, "is")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Diagnostica: dove si perde valore
+# ---------------------------------------------------------------------------
+
+st.markdown("### Diagnostica: dove si perde valore")
+st.caption(
+    "Un risultato negativo, da solo, non dice se il problema è il segnale o la struttura che gli "
+    "sta attorno: sono due diagnosi opposte e portano a due lavori diversi. Questa sezione le "
+    "separa, misurando i tre punti in cui il valore può andarsene."
+)
+
+seg = report.in_sample
+trades = seg.backtest.ledger.closed_trades
+
+if not trades:
+    st.info("Nessun trade chiuso: non c'è nulla da diagnosticare.")
+else:
+    cost_d = diag.cost_drag(trades)
+    exit_d = diag.exit_quality(trades)
+    plan_d = diag.plan_quality(trades)
+
+    st.info(diag.overall_diagnosis(cost_d, exit_d, plan_d, seg.beats_random))
+
+    d1, d2, d3 = st.tabs(["Costi", "Uscite", "Geometria dei piani"])
+
+    with d1:
+        st.caption(
+            "Il costo in euro non dice nulla da solo: 20 euro su un trade che rischia 500 sono "
+            "irrilevanti, sugli stessi 50 di rischio sono letali. Va letto in R. E dipende dalla "
+            "distanza dello stop, non dalla dimensione del trade: il controvalore vale "
+            "rischio/stop%, quindi i costi percentuali crescono quando lo stop si stringe mentre "
+            "il rischio in euro resta fisso."
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Costo medio per trade", _fmt(cost_d.mean_cost_r, "R"))
+        c2.metric("Costo mediano", _fmt(cost_d.median_cost_r, "R"))
+        c3.metric("Costi su P&L lordo", _fmt(cost_d.cost_share_of_gross_pct, "%", 0))
+        if cost_d.mean_cost_r is not None and cost_d.mean_cost_r >= diag.COST_ALARM_R:
+            st.error(cost_d.verdict)
+        else:
+            st.success(cost_d.verdict)
+        if not cost_d.by_symbol.empty:
+            st.dataframe(cost_d.by_symbol.rename(columns={
+                "symbol": "Simbolo", "trade": "Trade", "costo_medio_r": "Costo medio (R)",
+                "costi_eur": "Costi (EUR)", "pnl_netto_eur": "P&L netto (EUR)"}),
+                use_container_width=True, hide_index=True, key="diag_cost_symbol")
+
+    with d2:
+        st.caption(
+            "Confronto tra quanto un trade ha toccato a proprio favore (MFE) e quanto ha portato a "
+            "casa. È il test dell'ipotesi 'i target sono troppo bassi': se i vincenti arrivano a "
+            "2-3R prima di chiudere a 0,8R, il segnale la direzione la trova e sono le uscite a "
+            "buttarla via."
+        )
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("MFE media", _fmt(exit_d.mean_mfe_r, "R"))
+        e2.metric("R medio dei vincenti", _fmt(exit_d.mean_realized_r_winners, "R"))
+        e3.metric("Lasciato sul tavolo", _fmt(exit_d.mean_gap_r, "R"))
+        e4.metric("Vincita/perdita media", _fmt(exit_d.win_loss_size_ratio))
+        if exit_d.mean_gap_r is not None and exit_d.mean_gap_r >= diag.MFE_GAP_ALARM_R:
+            st.error(exit_d.verdict)
+        else:
+            st.warning(exit_d.verdict)
+        g1, g2 = st.columns(2)
+        g1.metric("Miglior trade", _fmt(exit_d.best_trade_r, "R"))
+        g2.metric("Peggior trade", _fmt(exit_d.worst_trade_r, "R"))
+        if not exit_d.exit_reasons.empty:
+            st.dataframe(exit_d.exit_reasons.rename(columns={"motivo": "Motivo di uscita",
+                                                              "trade": "Trade"}),
+                          use_container_width=True, hide_index=True, key="diag_exit_reasons")
+
+    with d3:
+        st.caption(
+            "Che piani il motore ha effettivamente eseguito. Il sistema calcola già un rapporto "
+            "rischio/rendimento e segnala quelli sfavorevoli: se la quota di trade sfavorevoli è "
+            "alta, il backtest sta misurando setup che tu non prenderesti guardandoli a schermo."
+        )
+        p1, p2, p3 = st.columns(3)
+        p1.metric("R:R mediano pianificato", _fmt(plan_d.median_planned_rr))
+        p2.metric("Trade già segnalati sfavorevoli", _fmt(plan_d.share_unfavorable_pct, "%", 0))
+        p3.metric("Stop dal ripiego ad ATR", _fmt(plan_d.share_stop_from_atr_pct, "%", 0))
+        if plan_d.share_unfavorable_pct is not None and plan_d.share_unfavorable_pct >= 30:
+            st.error(plan_d.verdict)
+        else:
+            st.info(plan_d.verdict)
+        if not plan_d.rr_distribution.empty:
+            st.dataframe(plan_d.rr_distribution, use_container_width=True, hide_index=True,
+                          key="diag_rr_dist")
+
+    st.markdown("#### Il segnale, isolato da uscite e costi")
+    st.caption(
+        "Rendimento medio nelle barre successive a un segnale, confrontato con quello di una barra "
+        "qualunque. Non ci sono stop, target, costi né sizing: se dopo un segnale long il prezzo "
+        "non sale più di quanto salga in un giorno a caso, il segnale non contiene informazione e "
+        "nessuna correzione a valle può salvarlo. Il calcolo ricalcola il segnale barra per barra: "
+        "richiede qualche minuto."
+    )
+    sq_col1, sq_col2 = st.columns([1, 2])
+    fwd_bars = sq_col1.slider("Orizzonte (barre)", 5, 60, 20, 5, key="diag_fwd_bars")
+    if sq_col2.button("Calcola qualità del segnale", key="diag_signal_quality"):
+        if not report.histories:
+            st.warning("Storici non disponibili: riesegui il backtest per abilitare questo test.")
+        else:
+            prog = st.progress(0.0, text="Analisi in corso...")
+            with st.spinner("Ricalcolo il segnale barra per barra..."):
+                st.session_state["_diag_sq"] = diag.signal_quality(
+                    report.histories, horizon=report.horizon, forward_bars=fwd_bars,
+                    progress_callback=lambda f, s: prog.progress(min(1.0, f), text=f"Analizzo {s}..."),
+                )
+            prog.empty()
+
+    sq = st.session_state.get("_diag_sq")
+    if sq:
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Dopo un segnale", _fmt(sq.mean_signal_return_pct, "%"))
+        q2.metric("Barra qualunque", _fmt(sq.mean_baseline_return_pct, "%"))
+        q3.metric("Differenza", _fmt(sq.edge_pct, "%"))
+        q4.metric("Segnali analizzati", f"{sq.n_signals}")
+        if sq.edge_pct is not None and sq.edge_pct > 0:
+            st.success(sq.verdict)
+        else:
+            st.error(sq.verdict)
+        st.caption(
+            "La statistica t è indicativa: le osservazioni si sovrappongono nel tempo e non sono "
+            "indipendenti, quindi va letta come ordine di grandezza e non come test formale."
+        )
 
 disclaimer(
     "Un backtest non è una previsione: è la misura di come un insieme di regole si sarebbe "
