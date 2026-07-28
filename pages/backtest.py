@@ -332,28 +332,62 @@ config = BacktestConfig(
 # risultato migliore è gonfiato dal caso (problema del multiple testing).
 st.session_state.setdefault("_bt_runs", 0)
 
+# Stima della durata, dichiarata PRIMA di partire. Il costo dominante è il
+# ricalcolo del segnale barra per barra: è inevitabile se si vuole un
+# backtest point-in-time, ma un'attesa di minuti senza preavviso è
+# indistinguibile da un blocco.
+_bars_per_year = 252
+_years = {"5y": 5, "10y": 10, "max": 15}.get(period, 10)
+_operative_bars = max(0, _years * _bars_per_year - runner.sig.HORIZON_LOOKBACK_BARS[horizon])
+_segments = 2 if run_oos else 1
+_est_seconds = len(symbols) * _operative_bars * 0.009 * (2 / 3 if not run_oos else 1)
+if symbols:
+    st.caption(
+        f"Durata stimata: circa **{_est_seconds / 60:.0f} minuti** "
+        f"({len(symbols)} strumenti × ~{_operative_bars:,} barre operative, segnale ricalcolato "
+        f"barra per barra). Non chiudere la pagina: l'attesa è normale, non un blocco."
+    )
+
 if st.button("Esegui backtest", type="primary", key="bt_run"):
     if not symbols:
         st.error("Seleziona almeno uno strumento.")
     else:
         st.session_state["_bt_runs"] += 1
+        phase_box = st.empty()
         progress = st.progress(0.0, text="Preparazione...")
+        started = dt.datetime.now()
 
         def _cb(frac, current_date):
-            progress.progress(min(1.0, frac), text=f"Simulazione bar per bar... {current_date}")
+            elapsed = (dt.datetime.now() - started).total_seconds()
+            eta = (elapsed / frac - elapsed) if frac > 0.02 else None
+            suffix = f" · ~{eta / 60:.0f} min rimanenti" if eta and eta > 30 else ""
+            progress.progress(min(1.0, frac),
+                              text=f"Simulazione bar per bar... {current_date}{suffix}")
 
-        with st.spinner("Scarico gli storici ed eseguo il motore event-driven..."):
-            try:
-                report = runner.run_full_backtest(
-                    symbols, config=config, period=period, monte_carlo_runs=mc_runs,
-                    run_out_of_sample=run_oos,
-                    configurations_tried=st.session_state["_bt_runs"],
-                    progress_callback=_cb,
-                )
-                st.session_state["_bt_report"] = report
-                st.session_state["_bt_frozen_at"] = dt.datetime.now().isoformat(timespec="seconds")
-            except ValueError as exc:
-                st.error(str(exc))
+        def _phase(nome, frazione):
+            # Ogni fase si annuncia: senza, dopo il bar loop la pagina
+            # resterebbe muta durante il benchmark, che è esattamente il
+            # momento in cui sembra bloccata.
+            if frazione is None:
+                phase_box.info(f"In corso: {nome}...")
+            else:
+                phase_box.info(f"In corso: {nome} — {frazione * 100:.0f}%")
+
+        try:
+            report = runner.run_full_backtest(
+                symbols, config=config, period=period, monte_carlo_runs=mc_runs,
+                run_out_of_sample=run_oos,
+                configurations_tried=st.session_state["_bt_runs"],
+                progress_callback=_cb, phase_callback=_phase,
+            )
+            st.session_state["_bt_report"] = report
+            st.session_state["_bt_frozen_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            st.session_state.pop("_diag_sq", None)   # la diagnostica si riferisce al run precedente
+            phase_box.success(
+                f"Completato in {(dt.datetime.now() - started).total_seconds() / 60:.1f} minuti.")
+        except ValueError as exc:
+            phase_box.empty()
+            st.error(str(exc))
         progress.empty()
 
 report = st.session_state.get("_bt_report")

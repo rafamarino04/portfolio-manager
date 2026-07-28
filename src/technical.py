@@ -629,14 +629,21 @@ def fit_trendline(points: list[tuple], kind: str, hist: pd.DataFrame, atr_val: f
     tol = 0.4 * atr_val if atr_val else 0.01 * float(np.mean(ys))
     start, end = pts[0][0], pts[-1][0]
     window = hist.loc[(hist.index >= start) & (hist.index <= end)]
-    violations = 0
-    for d, row in window.iterrows():
-        days = (d - x0).total_seconds() / 86400
-        line_y = slope * days + intercept
-        if kind == "support" and line_y > row["Low"] + tol:
-            violations += 1
-        elif kind == "resistance" and line_y < row["High"] - tol:
-            violations += 1
+
+    # Conteggio vettoriale delle violazioni. La versione precedente
+    # iterava le righe con `iterrows()`: corretta ma costosissima, e questa
+    # funzione viene chiamata due volte per ogni barra di ogni titolo
+    # durante un backtest — da sola valeva oltre un terzo del tempo di
+    # calcolo del segnale. La logica è identica, cambia solo come si conta.
+    if len(window):
+        days_arr = (window.index - x0).total_seconds().to_numpy() / 86400
+        line_y = slope * days_arr + intercept
+        if kind == "support":
+            violations = int((line_y > window["Low"].to_numpy() + tol).sum())
+        else:
+            violations = int((line_y < window["High"].to_numpy() - tol).sum())
+    else:
+        violations = 0
     valid = len(window) == 0 or (violations / max(1, len(window))) <= 0.1
 
     # Scarta pendenze che portano a valori fuori scala rispetto al range prezzi del periodo

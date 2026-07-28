@@ -129,12 +129,26 @@ def _atr_series_by_symbol(histories: dict[str, pd.DataFrame]) -> dict[str, pd.Se
 
 def _run_segment(label: str, histories: dict[str, pd.DataFrame], currencies: dict[str, str | None],
                   config: BacktestConfig, start: date | None, end: date | None,
-                  monte_carlo_runs: int, progress_callback=None) -> SegmentResult:
+                  monte_carlo_runs: int, progress_callback=None,
+                  phase_callback=None) -> SegmentResult:
+    """`phase_callback(fase, frazione)` riporta l'avanzamento di OGNI fase.
+
+    Serve perché il bar loop non è l'unica cosa lunga: il benchmark a
+    entrata casuale simula runs x n_trade operazioni e può durare quanto il
+    backtest stesso. Senza segnalarlo, l'interfaccia resta muta dopo che la
+    barra di avanzamento del bar loop è arrivata a fine corsa, e l'attesa
+    diventa indistinguibile da un blocco."""
+    def _phase(nome, frazione=None):
+        if phase_callback:
+            phase_callback(nome, frazione)
+
+    _phase(f"{label}: simulazione bar per bar")
     result = run_backtest(histories, config=config, currencies=currencies,
                            start=start, end=end, progress_callback=progress_callback)
     metrics = mt.compute_metrics(result.ledger.closed_trades, result.ledger.equity_curve,
                                   config.initial_equity_eur, label=label)
 
+    _phase(f"{label}: benchmark buy-and-hold")
     bh = bm.buy_and_hold(histories, config.initial_equity_eur, start=start, end=end,
                           costs=config.costs, currencies=currencies)
 
@@ -146,12 +160,15 @@ def _run_segment(label: str, histories: dict[str, pd.DataFrame], currencies: dic
     beats_random = None
     percentile = None
     if metrics.n_trades > 0:
+        _phase(f"{label}: benchmark a entrata casuale ({monte_carlo_runs} simulazioni)", 0.0)
         random_result = bm.random_entry_monte_carlo(
             histories, n_trades_target=metrics.n_trades,
             initial_equity_eur=config.initial_equity_eur,
             atr_by_symbol=_atr_series_by_symbol(histories),
             risk=config.risk, costs=config.costs, currencies=currencies,
             start=start, end=end, runs=monte_carlo_runs,
+            progress_callback=lambda f: _phase(
+                f"{label}: benchmark a entrata casuale ({monte_carlo_runs} simulazioni)", f),
         )
         beats_random = random_result.beats(metrics.total_return_pct)
         percentile = bm.percentile_of(metrics.total_return_pct, random_result.returns_pct)
@@ -169,7 +186,8 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
                        monte_carlo_runs: int = bm.DEFAULT_MONTE_CARLO_RUNS,
                        run_out_of_sample: bool = True,
                        configurations_tried: int = 1,
-                       progress_callback=None) -> FullBacktestReport:
+                       progress_callback=None,
+                       phase_callback=None) -> FullBacktestReport:
     """Backtest completo con split in-sample/out-of-sample e benchmark.
 
     `run_out_of_sample=False` permette di restare deliberatamente sullo
@@ -184,6 +202,8 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
             "settimanali e richiederebbe un ricampionamento dedicato)."
         )
 
+    if phase_callback:
+        phase_callback("Scarico gli storici", None)
     histories, currencies, skipped = load_histories(symbols, period=period)
     diagnostics: list[str] = []
     if skipped:
@@ -208,14 +228,16 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
     in_sample = _run_segment("In-sample", histories, currencies, config,
                               start=first_operative, end=split,
                               monte_carlo_runs=monte_carlo_runs,
-                              progress_callback=progress_callback)
+                              progress_callback=progress_callback,
+                              phase_callback=phase_callback)
 
     out_of_sample = None
     if run_out_of_sample and split is not None:
         out_of_sample = _run_segment("Out-of-sample", histories, currencies, config,
                                       start=split, end=None,
                                       monte_carlo_runs=monte_carlo_runs,
-                                      progress_callback=progress_callback)
+                                      progress_callback=progress_callback,
+                                      phase_callback=phase_callback)
 
     diagnostics.extend(in_sample.backtest.diagnostics)
     if out_of_sample:
