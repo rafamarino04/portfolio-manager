@@ -1,0 +1,1 @@
+symbol,direction,signal_date,entry_date,entry_price,reference_open_price,exit_date,exit_price,exit_reason,size,risk_per_unit,initial_risk_eur,confidence,leverage,gross_pnl_eur,costs_eur,net_pnl_eur,gross_r,net_r,mae_r,mfe_r,bars_held,gapped_exit,execution_delay_r
