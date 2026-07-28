@@ -22,7 +22,7 @@ from src import financials as finmod
 from src import fundamental as fnd
 from src import fundamental_export as fexp
 from src import fundamental_score as fscore
-from src import github_sync
+from src import persistence
 from src import portfolio as pf
 from src import watchlist as wl
 from src.portfolio import CASH_CATEGORY
@@ -459,12 +459,12 @@ with tab_search:
         search_watch_df = wl.load_watchlist(WATCHLIST_PATH)
         if not wl.is_watched(search_watch_df, symbol) and st.button("Aggiungi ai Preferiti", key="fa_search_add_fav"):
             search_watch_df = wl.add_ticker(search_watch_df, symbol)
-            wl.save_watchlist(search_watch_df, WATCHLIST_PATH)
-            if github_sync.is_configured():
-                ok, msg = github_sync.push_csv(WATCHLIST_PATH, WATCHLIST_PATH,
-                                                f"Aggiorna preferiti - {dt.date.today().isoformat()}")
-                (st.success if ok else st.error)(msg)
-            st.success(f"{symbol} aggiunto ai preferiti.")
+            # Mai un salvataggio silenziosamente non permanente: l'esito
+            # (persistito su GitHub / solo sessione) è sempre dichiarato.
+            outcome = persistence.save_and_sync(
+                lambda: wl.save_watchlist(search_watch_df, WATCHLIST_PATH), WATCHLIST_PATH,
+                f"Aggiorna preferiti - {dt.date.today().isoformat()}")
+            persistence.render_outcome(outcome, f"{symbol} aggiunto ai preferiti.")
         render_fundamental_card(symbol, key_prefix="fa_search")
 
 disclaimer(

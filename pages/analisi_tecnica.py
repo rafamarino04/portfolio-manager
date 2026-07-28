@@ -36,7 +36,7 @@ import streamlit as st
 
 from src import alerts
 from src import data_provider as dp
-from src import github_sync
+from src import persistence
 from src import portfolio as pf
 from src import technical as tech
 from src import technical_view as tv
@@ -134,18 +134,54 @@ def _render_multi_horizon_summary(multi: dict):
     st.info(summary["reading"])
 
 
-def _push_watchlist():
-    if github_sync.is_configured():
-        ok, msg = github_sync.push_csv(WATCHLIST_PATH, WATCHLIST_PATH,
-                                        f"Aggiorna preferiti - {dt.date.today().isoformat()}")
-        (st.success if ok else st.error)(msg)
+def _save_watchlist(df, success_prefix: str = ""):
+    """Salva i Preferiti dichiarando sempre se il salvataggio è permanente.
+
+    Sostituisce il vecchio `_push_watchlist`, che quando GitHub non era
+    configurato non faceva nulla **in silenzio**: l'utente vedeva il
+    messaggio verde di conferma e perdeva i dati al primo riavvio dell'app
+    (Streamlit Cloud ricostruisce il container da GitHub e tiene solo ciò
+    che è nel repository)."""
+    outcome = persistence.save_and_sync(
+        lambda: wl.save_watchlist(df, WATCHLIST_PATH), WATCHLIST_PATH,
+        f"Aggiorna preferiti - {dt.date.today().isoformat()}")
+    persistence.remember_outcome(outcome, success_prefix)
+    return outcome
 
 
-def _push_trading_universe():
-    if github_sync.is_configured():
-        ok, msg = github_sync.push_csv(tu.TRADING_UNIVERSE_PATH, tu.TRADING_UNIVERSE_PATH,
-                                        f"Aggiorna universo trading - {dt.date.today().isoformat()}")
-        (st.success if ok else st.error)(msg)
+def _save_trading_universe(df, success_prefix: str = ""):
+    outcome = persistence.save_and_sync(
+        lambda: tu.save_universe(df), tu.TRADING_UNIVERSE_PATH,
+        f"Aggiorna universo trading - {dt.date.today().isoformat()}")
+    persistence.remember_outcome(outcome, success_prefix)
+    return outcome
+
+
+def _backup_controls(df, filename: str, label: str, key_prefix: str, on_restore):
+    """Scarica/carica CSV: rete di sicurezza indipendente da GitHub.
+
+    Serve nel caso in cui la sincronizzazione non sia configurata, ma resta
+    utile anche quando lo è — un backup locale non costa nulla e non
+    dipende dal fatto che un token resti valido."""
+    b1, b2 = st.columns([1, 2])
+    with b1:
+        st.download_button(
+            f"Scarica backup {label}", data=df.to_csv(index=False).encode("utf-8"),
+            file_name=filename, mime="text/csv", key=f"{key_prefix}_download",
+        )
+    with b2:
+        uploaded = st.file_uploader(f"Ripristina {label} da CSV", type="csv",
+                                     key=f"{key_prefix}_upload")
+        if uploaded is not None:
+            try:
+                restored = pd.read_csv(uploaded)
+            except Exception as exc:
+                st.error(f"File non leggibile: {exc}")
+                return
+            if "ticker" not in restored.columns:
+                st.error("Il CSV non contiene una colonna 'ticker': non è un backup valido.")
+                return
+            on_restore(restored)
 
 
 def _cached_tradeability(symbol: str) -> dict | None:
@@ -541,9 +577,9 @@ def _render_tradeability_section():
         if st.button(f"Aggiungi {detail_symbol} all'Universo Trading", key="tts_promote"):
             universe_df = tu.add_ticker(universe_df, detail_symbol, promote_note,
                                          tts_at_add=detail["tts"])
-            tu.save_universe(universe_df)
-            _push_trading_universe()
-            st.success(f"{detail_symbol} aggiunto all'Universo Trading (TTS {detail['tts']:.0f} congelato).")
+            _save_trading_universe(
+                universe_df,
+                f"{detail_symbol} aggiunto all'Universo Trading (TTS {detail['tts']:.0f} congelato).")
             st.rerun()
 
     if detail["asset_class"] == "EQUITY":
@@ -622,6 +658,22 @@ def _render_trading_universe_section():
     )
 
     universe_df = tu.load_universe()
+    persistence.render_pending_outcome()
+
+    with st.expander("Backup dell'Universo Trading"):
+        st.caption(
+            "Scarica una copia da tenere fuori dall'app. Se GitHub non è collegato i dati vivono "
+            "solo nella sessione corrente e si perdono al riavvio: questo backup è la rete di "
+            "sicurezza indipendente."
+        )
+        _backup_controls(
+            universe_df, "trading_universe.csv", "Universo Trading", "tu_backup",
+            lambda restored: (
+                _save_trading_universe(tu.normalize(restored),
+                                        f"Universo Trading ripristinato ({len(restored)} titoli)."),
+                st.rerun(),
+            ),
+        )
 
     st.markdown("**Gestisci l'Universo Trading**")
     with st.form("add_universe_form", clear_on_submit=True):
@@ -637,12 +689,10 @@ def _render_trading_universe_section():
             result = _cached_tradeability(symbol_to_add)
         tts_value = result.get("tts") if result and result.get("computable") else None
         universe_df = tu.add_ticker(universe_df, symbol_to_add, new_note, tts_at_add=tts_value)
-        tu.save_universe(universe_df)
-        _push_trading_universe()
-        if tts_value is not None:
-            st.success(f"{symbol_to_add} aggiunto (TTS {tts_value:.0f} congelato).")
-        else:
-            st.warning(f"{symbol_to_add} aggiunto, ma il TTS non è calcolabile: nessun punteggio congelato.")
+        prefix = (f"{symbol_to_add} aggiunto (TTS {tts_value:.0f} congelato)."
+                  if tts_value is not None
+                  else f"{symbol_to_add} aggiunto, ma il TTS non è calcolabile: nessun punteggio congelato.")
+        _save_trading_universe(universe_df, prefix)
         st.rerun()
 
     if universe_df.empty:
@@ -663,8 +713,7 @@ def _render_trading_universe_section():
                                   key="tu_remove")
     if remove_choice != "—" and st.button("Rimuovi", key="tu_remove_btn"):
         universe_df = tu.remove_ticker(universe_df, remove_choice)
-        tu.save_universe(universe_df)
-        _push_trading_universe()
+        _save_trading_universe(universe_df, f"{remove_choice} rimosso dall'Universo Trading.")
         st.rerun()
 
     st.divider()
@@ -728,6 +777,22 @@ with tab_portfolio:
 with tab_favorites:
     watch_df = wl.load_watchlist(WATCHLIST_PATH)
 
+    persistence.render_pending_outcome()
+
+    with st.expander("Backup dei Preferiti"):
+        st.caption(
+            "Scarica una copia da tenere fuori dall'app. Se GitHub non è collegato i dati vivono "
+            "solo nella sessione corrente e si perdono al riavvio: questo backup è la rete di "
+            "sicurezza indipendente."
+        )
+        _backup_controls(
+            watch_df, "watchlist.csv", "Preferiti", "fav_backup",
+            lambda restored: (
+                _save_watchlist(wl.normalize(restored), f"Preferiti ripristinati ({len(restored)} titoli)."),
+                st.rerun(),
+            ),
+        )
+
     st.markdown("**Gestisci i preferiti**")
     with st.form("add_favorite_form", clear_on_submit=True):
         f1, f2, f3, f4 = st.columns([2, 1, 2, 1])
@@ -737,9 +802,7 @@ with tab_favorites:
         submitted = f4.form_submit_button("Aggiungi")
     if submitted and new_ticker.strip():
         watch_df = wl.add_ticker(watch_df, new_ticker, new_ref_price or None, new_note)
-        wl.save_watchlist(watch_df, WATCHLIST_PATH)
-        _push_watchlist()
-        st.success(f"{new_ticker.strip().upper()} aggiunto ai preferiti.")
+        _save_watchlist(watch_df, f"{new_ticker.strip().upper()} aggiunto ai preferiti.")
         st.rerun()
 
     if watch_df.empty:
@@ -754,8 +817,7 @@ with tab_favorites:
                                       key="fav_remove")
         if remove_choice != "—" and st.button("Rimuovi", key="fav_remove_btn"):
             watch_df = wl.remove_ticker(watch_df, remove_choice)
-            wl.save_watchlist(watch_df, WATCHLIST_PATH)
-            _push_watchlist()
+            _save_watchlist(watch_df, f"{remove_choice} rimosso dai preferiti.")
             st.rerun()
 
         st.divider()
@@ -798,9 +860,8 @@ with tab_search:
         search_watch_df = wl.load_watchlist(WATCHLIST_PATH)
         if not wl.is_watched(search_watch_df, symbol) and st.button("Aggiungi ai Preferiti", key="search_add_fav"):
             search_watch_df = wl.add_ticker(search_watch_df, symbol)
-            wl.save_watchlist(search_watch_df, WATCHLIST_PATH)
-            _push_watchlist()
-            st.success(f"{symbol} aggiunto ai preferiti.")
+            _save_watchlist(search_watch_df, f"{symbol} aggiunto ai preferiti.")
+            persistence.render_pending_outcome()
         render_ticker_analysis(symbol, key_prefix="search")
 
 with tab_tradeability:

@@ -15,6 +15,20 @@ WATCHLIST_PATH = "data/watchlist.csv"
 COLUMNS = ["ticker", "reference_price", "note", "added_date"]
 
 
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    """Rende conforme un DataFrame che arriva da fuori (ripristino da un
+    file di backup caricato dall'utente): colonne mancanti aggiunte, ordine
+    fissato, ticker normalizzati. Senza questo, un CSV con colonne diverse
+    farebbe fallire `save_watchlist`, che seleziona `df[COLUMNS]`."""
+    out = df.copy()
+    for col in COLUMNS:
+        if col not in out.columns:
+            out[col] = None
+    out = out[COLUMNS]
+    out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+    return out
+
+
 def load_watchlist(path: str = WATCHLIST_PATH) -> pd.DataFrame:
     if not os.path.exists(path):
         return pd.DataFrame(columns=COLUMNS)

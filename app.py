@@ -8,6 +8,7 @@ al nome del file da cui dipendere).
 """
 import streamlit as st
 
+from src import persistence
 from src.auth import check_password
 from src.theme import apply_theme
 
@@ -16,6 +17,13 @@ apply_theme()
 
 if not check_password():
     st.stop()
+
+# Stato della persistenza, visibile su OGNI pagina prima di inserire dati.
+# Streamlit Cloud ricostruisce l'app da GitHub a ogni riavvio e conserva
+# solo ciò che è nel repository: senza il collegamento a GitHub tutto ciò
+# che scrivi vive nella sola sessione corrente. Va saputo prima, non dopo
+# aver perso dei dati.
+persistence.render_global_status_banner()
 
 pages = [
     st.Page("pages/portafoglio_personale.py", title="Portafoglio Personale", default=True),

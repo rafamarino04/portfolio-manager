@@ -37,11 +37,12 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `src/persistence.py` — **persistenza dichiarata**: ogni salvataggio restituisce un esito esplicito (permanente su GitHub / solo sessione / sincronizzazione fallita) e non esiste un percorso in cui il caso non permanente sia silenzioso. Streamlit Cloud non ha disco permanente: senza il collegamento a GitHub i dati si perdono al riavvio
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
-- `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica)
+- `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica; esiste nel repository solo se il collegamento a GitHub è attivo — vedi punto 7 del Setup)
 - `data/trading_universe.csv` — il tuo Universo Trading: ticker, nota e TTS congelato all'inserimento (creato al primo inserimento)
 - `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
 - `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
@@ -149,12 +150,25 @@ riesce a inviare l'email — lo stato della scansione viene comunque
 salvato per non perdere la deduplica. Per cambiare giorno/orario, modifica
 la riga `cron` in `.github/workflows/technical_alerts.yml`.
 
-### 7. (Consigliato) Rendi permanenti le modifiche fatte dall'app
-La pagina **Portafoglio Personale** (registro transazioni, allocazione
-ideale, benchmark) e **Impostazioni Alert e Report** salvano di base solo
-sul disco dell'app, che Streamlit Cloud può azzerare ad ogni redeploy
-(succede anche quando il report automatico fa un commit). Per renderle
-permanenti:
+### 7. (NECESSARIO) Rendi permanenti le modifiche fatte dall'app
+
+**Senza questo passaggio perdi i dati al primo riavvio dell'app.** Non è
+un'ipotesi: è già successo.
+
+Streamlit Community Cloud non ha un disco permanente. Ad ogni riavvio o
+redeploy ricostruisce l'app da GitHub, e conserva **solo ciò che è nel
+repository**. Tutto quello che l'app scrive mentre gira — preferiti,
+universo trading, transazioni, impostazioni — vive nel container in
+esecuzione e sparisce quando il container viene ricreato.
+
+Il collegamento a GitHub è ciò che trasforma un salvataggio temporaneo in
+un commit permanente. Finché non è configurato, l'app mostra un avviso
+rosso in cima a ogni pagina e ogni singolo salvataggio dichiara
+esplicitamente di non essere permanente. Nel frattempo, usa i pulsanti
+**Backup** nelle sezioni Preferiti e Universo Trading per scaricare una
+copia dei dati.
+
+Per configurarlo: 
 
 1. GitHub → **Settings** (profilo) → **Developer settings** → **Personal
    access tokens** → **Fine-grained tokens** → **Generate new token**
@@ -166,9 +180,21 @@ permanenti:
    GITHUB_TOKEN = "github_pat_..."
    GITHUB_REPO = "TUO-USERNAME/portfolio-manager"
    ```
-6. Salva: da ora ogni "Salva modifiche" fa anche un commit automatico su
-   GitHub. Senza questo passaggio l'app funziona comunque, ma te lo
-   segnala ogni volta.
+6. Salva: da ora ogni salvataggio fa anche un commit automatico su GitHub,
+   e l'app te lo conferma esplicitamente ("la modifica è permanente").
+
+Per verificare che funzioni: aggiungi un titolo ai Preferiti e controlla
+che compaia `data/watchlist.csv` nel repository su GitHub. Se non compare,
+il collegamento non è attivo e i dati sono ancora a rischio.
+
+**Perché è successo (nota storica).** Fino alla versione precedente il
+salvataggio verso GitHub era agganciato come `if is_configured(): push()`:
+quando i secrets non erano impostati, il ramo era **vuoto e silenzioso**.
+L'utente vedeva la conferma verde "aggiunto ai preferiti" e non aveva modo
+di sapere che il dato sarebbe sparito al primo riavvio. Ora ogni
+salvataggio passa da `src/persistence.py`, che restituisce sempre un esito
+esplicito — permanente, solo-sessione o sincronizzazione fallita — e non
+esiste più un percorso in cui il caso non permanente sia muto.
 
 ## Come usarla per decidere, non solo per guardare
 

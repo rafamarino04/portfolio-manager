@@ -54,6 +54,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     return out[COLUMNS].astype(object)
 
 
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    """Versione pubblica di `_normalize`, per i dati che arrivano da fuori
+    (es. il ripristino da un file di backup caricato dall'utente): un CSV
+    con colonne mancanti o in ordine diverso va reso conforme prima di
+    essere salvato, invece di far fallire la scrittura."""
+    out = _normalize(df)
+    out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+    return out
+
+
 def load_universe(path: str | None = None) -> pd.DataFrame:
     """Il percorso si risolve a ogni chiamata, non come valore di default
     legato alla definizione della funzione: così i test possono redirigere

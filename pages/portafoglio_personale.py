@@ -15,6 +15,7 @@ import streamlit as st
 
 from src import benchmark as bm
 from src import github_sync
+from src import persistence
 from src import portfolio as pf
 from src import rebalancing as rb
 from src import report_config as cfg
@@ -24,6 +25,8 @@ from src.theme import (BG, CATEGORY_COLORS, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECON
                        apply_theme, badge, disclaimer)
 
 apply_theme()
+
+persistence.render_pending_outcome()
 
 st.title("Portafoglio Personale")
 st.caption(
@@ -254,13 +257,10 @@ with col_compare:
                     new_settings = dict(settings)
                     new_settings["target_allocation"] = new_target
                     new_settings["rebalance_tolerance_pct"] = tolerance
-                    cfg.save_settings(new_settings)
-                    if github_sync.is_configured():
-                        github_sync.push_csv(
-                            "data/settings.json", "data/settings.json",
-                            f"Aggiorna allocazione ideale - {dt.date.today().isoformat()}",
-                        )
-                    st.success("Portafoglio ideale salvato.")
+                    persistence.save_sync_and_remember(
+                        lambda: cfg.save_settings(new_settings), "data/settings.json",
+                        f"Aggiorna allocazione ideale - {dt.date.today().isoformat()}",
+                        "Portafoglio ideale salvato.")
                     st.rerun()
 
         table = rb.compute_rebalancing(enriched, settings["target_allocation"],
@@ -318,10 +318,9 @@ if chosen_benchmark_ticker != benchmark_ticker:
     new_settings = dict(settings)
     new_settings["benchmark_ticker"] = chosen_benchmark_ticker
     new_settings["benchmark_name"] = chosen_benchmark_name
-    cfg.save_settings(new_settings)
-    if github_sync.is_configured():
-        github_sync.push_csv("data/settings.json", "data/settings.json",
-                              f"Aggiorna benchmark - {dt.date.today().isoformat()}")
+    persistence.save_sync_and_remember(
+        lambda: cfg.save_settings(new_settings), "data/settings.json",
+        f"Aggiorna benchmark - {dt.date.today().isoformat()}", "Benchmark aggiornato.")
     benchmark_ticker, benchmark_name = chosen_benchmark_ticker, chosen_benchmark_name
     st.rerun()
 
