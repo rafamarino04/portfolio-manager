@@ -79,6 +79,15 @@ class BacktestConfig:
     # risultato sarebbe sistematicamente più bello del reale (le posizioni
     # in perdita tendono a restare aperte più a lungo).
     close_open_positions_at_end: bool = True
+    # Non eseguire i piani che `trade_plan` segnala già come sfavorevoli
+    # (rapporto rischio/rendimento sotto PLAN_MIN_ACCEPTABLE_RR).
+    #
+    # Prima il motore ignorava quel flag ed eseguiva comunque: il backtest
+    # misurava così setup che il sistema stesso dichiara da scartare e che
+    # nessuno prenderebbe guardandoli a schermo. Non è una taratura — la
+    # soglia è quella già dichiarata in src/technical.py, non un valore
+    # scelto osservando i risultati.
+    skip_unfavorable_rr: bool = True
 
 
 @dataclass
@@ -260,6 +269,12 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
             if not plan or plan.get("bias") not in ("long", "short"):
                 continue
             if plan.get("stop") is None or plan.get("target") is None:
+                continue
+
+            if config.skip_unfavorable_rr and plan.get("rr_unfavorable"):
+                result.n_orders_rejected += 1
+                reason = "rapporto rischio/rendimento sfavorevole (scartato dal sistema)"
+                result.rejection_reasons[reason] = result.rejection_reasons.get(reason, 0) + 1
                 continue
 
             result.n_signals_actionable += 1

@@ -84,6 +84,11 @@ class PaperConfig:
     order_fee_eur: float = 1.0
     fx_cost_pct_per_leg: float = 0.5
     slippage_bps_per_side: float = 5.0
+    # Stessa regola del backtest: non si opera sui piani che il sistema
+    # stesso segnala come sfavorevoli. Backtest e forward DEVONO applicare
+    # gli stessi filtri, altrimenti il confronto tra i due — che è l'intero
+    # scopo del forward — misura due strategie diverse.
+    skip_unfavorable_rr: bool = True
     frozen_at: str = ""
 
     def risk_config(self) -> RiskConfig:
@@ -226,6 +231,12 @@ def step(symbols: list[str], state: PaperState, config: PaperConfig,
         if not plan or plan.get("bias") not in ("long", "short"):
             continue
         if plan.get("stop") is None or plan.get("target") is None:
+            continue
+        if config.skip_unfavorable_rr and plan.get("rr_unfavorable"):
+            events.append(StepEvent(
+                "scarto", symbol,
+                f"Rapporto rischio/rendimento sfavorevole ({plan.get('risk_reward')}): "
+                "il sistema stesso scarta questo piano."))
             continue
 
         price = price_fn(symbol)

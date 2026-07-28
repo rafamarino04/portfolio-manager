@@ -312,6 +312,13 @@ with st.expander("Impostazioni avanzate"):
              "L'out-of-sample andrebbe guardato una volta sola, dopo aver congelato i parametri: "
              "ogni sbirciata aggiuntiva lo consuma e lo trasforma di fatto in in-sample.",
     )
+    skip_bad_rr = st.checkbox(
+        "Scarta i piani con rischio/rendimento sfavorevole", value=True, key="bt_skip_rr",
+        help="Il piano operativo calcola già un rapporto rischio/rendimento e segnala quelli "
+             "sotto la propria soglia minima. Tenendo la casella spuntata il backtest non li "
+             "esegue, cioè misura quello che faresti davvero. Toglierla serve solo a misurare "
+             "quanto pesavano: non è il comportamento normale.",
+    )
     st.caption(
         "Leva da confidenza: **disattivata**. La specifica la sblocca solo dopo che la "
         "calibrazione empirica (Stage 4) ha mostrato che i segnali ad alta confidenza vincono "
@@ -326,6 +333,7 @@ cost_model = CostModel(
 config = BacktestConfig(
     horizon=horizon, initial_equity_eur=initial_equity,
     risk=RiskConfig(risk_pct=risk_pct, leverage_enabled=False), costs=cost_model,
+    skip_unfavorable_rr=skip_bad_rr,
 )
 
 # Conteggio delle configurazioni provate in sessione: più sono, più il

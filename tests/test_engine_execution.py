@@ -301,3 +301,61 @@ def test_equity_curve_registrata_ogni_giorno_operativo(monkeypatch):
     result = _run_with_signal(hist, signal, monkeypatch)
     assert len(result.ledger.equity_curve) > 30
     assert all(len(point) == 3 for point in result.ledger.equity_curve)
+
+
+# ---------------------------------------------------------------------------
+# Filtro sul rapporto rischio/rendimento
+# ---------------------------------------------------------------------------
+
+def test_non_esegue_i_piani_che_il_sistema_segnala_sfavorevoli(monkeypatch):
+    """Il difetto originale: il motore ignorava `rr_unfavorable` ed eseguiva
+    comunque. Il backtest misurava così setup che il sistema stesso dichiara
+    da scartare — sui dati reali era il 76% dei trade eseguiti."""
+    hist = _linear_history()
+
+    def signal(symbol, hist_to_date, horizon="medio"):
+        if len(hist_to_date) == 11:
+            px = float(hist_to_date["Close"].iloc[-1])
+            # R:R 0,4 — sotto la soglia minima dichiarata dal sistema.
+            return {"bias": "long", "stop": px - 5, "target": px + 2, "entry": px,
+                    "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
+        return {"bias": "nessun_setup"}
+
+    result = _run_with_signal(hist, signal, monkeypatch)
+    assert result.ledger.closed_trades == []
+    assert any("sfavorevole" in reason for reason in result.rejection_reasons)
+
+
+def test_esegue_i_piani_con_rapporto_favorevole(monkeypatch):
+    hist = _linear_history()
+
+    def signal(symbol, hist_to_date, horizon="medio"):
+        if len(hist_to_date) == 11:
+            px = float(hist_to_date["Close"].iloc[-1])
+            return {"bias": "long", "stop": px - 5, "target": px + 10, "entry": px,
+                    "confidence": 70.0, "risk_reward": 2.0, "rr_unfavorable": False}
+        return {"bias": "nessun_setup"}
+
+    result = _run_with_signal(hist, signal, monkeypatch)
+    assert len(result.ledger.closed_trades) == 1
+
+
+def test_il_filtro_e_disattivabile_per_confronto(monkeypatch):
+    """Disattivarlo serve a misurare quanto pesava il difetto, non a
+    tornare al comportamento precedente come impostazione normale."""
+    hist = _linear_history()
+
+    def signal(symbol, hist_to_date, horizon="medio"):
+        if len(hist_to_date) == 11:
+            px = float(hist_to_date["Close"].iloc[-1])
+            return {"bias": "long", "stop": px - 5, "target": px + 2, "entry": px,
+                    "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
+        return {"bias": "nessun_setup"}
+
+    result = _run_with_signal(hist, signal, monkeypatch,
+                               config=_config(skip_unfavorable_rr=False))
+    assert len(result.ledger.closed_trades) == 1
+
+
+def test_il_filtro_e_attivo_di_default():
+    assert BacktestConfig().skip_unfavorable_rr is True

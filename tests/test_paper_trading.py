@@ -325,3 +325,24 @@ def test_step_su_lista_vuota_non_esplode(monkeypatch):
     state, events = _step([], paper.PaperState(), _config(), 100.0, {}, monkeypatch)
     assert state.open_positions.empty
     assert events == []
+
+
+def test_paper_non_apre_sui_piani_sfavorevoli(monkeypatch):
+    """Backtest e forward devono applicare gli stessi filtri: se il paper
+    tradasse setup che il backtest scarta, il confronto tra i due — che è
+    l'intero scopo del forward — misurerebbe due strategie diverse."""
+    hist = _history(n=40)
+
+    def signal(symbol, h, horizon="medio"):
+        px = float(h["Close"].iloc[-1])
+        return {"bias": "long", "stop": px - 5, "target": px + 2, "entry": px,
+                "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
+
+    state, events = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, monkeypatch,
+                           signal=signal)
+    assert state.open_positions.empty
+    assert any("sfavorevole" in e.message for e in events)
+
+
+def test_paper_filtro_attivo_di_default():
+    assert paper.PaperConfig().skip_unfavorable_rr is True
