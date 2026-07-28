@@ -23,31 +23,36 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 
 ## Cosa include
 
-- `app.py` — bootstrap: password, poi la navigazione tra le 6 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
+- `app.py` — bootstrap: password, poi la navigazione tra le 7 sezioni (nessun numero o emoji nel nome delle pagine, l'ordine è deciso qui)
 - `pages/portafoglio_personale.py` — la vista su tutto ciò che riguarda le posizioni reali: **Registro Transazioni** a tendina in cima (aggiungi un movimento o apri lo storico completo per modificarlo), allocazione attuale a torta, confronto con il portafoglio ideale (target impostabile lì stesso) a tendina accanto al grafico, poi il dettaglio di rendimento per prodotto/portafoglio e il confronto con un benchmark di mercato (XIRR reale, non approssimato)
 - `pages/analisi_tecnica.py` — hub decisionale sui titoli: **Portafoglio** (i tuoi titoli, pronti da analizzare), **Preferiti** (watchlist con avvisi tecnici automatici), **Cerca** (ricerca libera), **Idoneità al Trading** (Technical Tradeability Score, con ambito dello screening selezionabile) e **Universo Trading** (la short-list selezionata per il trading). Analisi tecnica secondo il framework di J. Murphy per breve/medio/lungo termine — trend strutturale via swing highs/lows riconciliato con le medie mobili, supporti/resistenze e trendline validate, oscillatori letti nel contesto del trend, candlestick e figure di prezzo filtrati per affidabilità, volume/OBV — con una sintesi finale basata su un **Directional Score + Agreement Index** che distingue un quadro davvero neutro da segnali in conflitto tra loro
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
 - `pages/backtest.py` — **Backtest** del piano operativo dell'Analisi Tecnica sull'Universo Trading: motore event-driven bar-by-bar (`src/engine/`), esecuzione al next-bar-open, regola stop-first sull'ambiguità intrabar, gap pagati al prezzo reale, costi Trade Republic + FX, sizing a frazione fissa del rischio, metriche in EUR e in R con intervalli di Wilson, benchmark buy-and-hold ed entrata casuale, verdetto in linguaggio piano
-- `src/engine/` — il motore condiviso da backtest e (in futuro) forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`
+- `pages/forward_paper.py` — **Forward Paper Trading**: il segnale messo alla prova in tempo reale con capitale virtuale, avanzato da un job schedulato a mercato aperto. Confronto backtest vs forward, costo del ritardo di esecuzione e curva di calibrazione della confidenza
+- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`
+- `src/paper_store.py` — persistenza dello stato del paper trading (posizioni aperte, trade chiusi, parametri congelati), committata nel repository dal job schedulato
 - `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
 - `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
+- `scripts/run_paper_trading.py` — avanza il forward paper trading di un passo (lanciato ogni giorno feriale alle 15:00 UTC da GitHub Actions, a mercato aperto) e ricommitta lo stato nel repository
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
 - `src/persistence.py` — **persistenza dichiarata**: ogni salvataggio restituisce un esito esplicito (permanente su GitHub / solo sessione / sincronizzazione fallita) e non esiste un percorso in cui il caso non permanente sia silenzioso. Streamlit Cloud non ha disco permanente: senza il collegamento a GitHub i dati si perdono al riavvio
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
 - `data/portfolio.csv` — le posizioni attuali, calcolate automaticamente da `transactions.csv` (non modificarlo a mano)
 - `data/watchlist.csv` — i tuoi titoli Preferiti, con un prezzo di riferimento opzionale (creato al primo utilizzo della pagina Analisi Tecnica; esiste nel repository solo se il collegamento a GitHub è attivo — vedi punto 7 del Setup)
 - `data/trading_universe.csv` — il tuo Universo Trading: ticker, nota e TTS congelato all'inserimento (creato al primo inserimento)
+- `data/paper_open_positions.csv`, `data/paper_closed_trades.csv`, `data/paper_meta.json` — lo stato del forward paper trading: posizioni virtuali aperte, registro dei trade chiusi e parametri congelati con la loro data
 - `data/alert_state.json` — ultimo segnale tecnico visto per ogni titolo, usato per non rimandare la stessa email ogni giorno (creato al primo invio riuscito)
 - `data/settings.json` — le tue impostazioni (allocazione ideale, benchmark, sezioni report, alert email)
 - `.github/workflows/weekly_report.yml` — l'automazione del report periodico, gratuita
 - `.github/workflows/technical_alerts.yml` — l'automazione degli alert email sui segnali tecnici, gratuita
+- `.github/workflows/paper_trading.yml` — l'automazione del forward paper trading, gratuita
 - `.streamlit/config.toml` — tema scuro coerente su tutte le pagine
 
 ## Come funziona il registro transazioni
@@ -488,6 +493,109 @@ due orientate al trading. È volutamente assente in Portafoglio e Cerca,
 dove aggiungerebbe il download di 2 anni di storico ad ogni apertura senza
 essere il motivo per cui stai guardando quel titolo.
 
+## Forward Paper Trading: come funziona
+
+Stage 3 (più l'impianto dello Stage 4) di `BACKTEST AND FORWARD.pdf`.
+Motore in `src/engine/paper.py`, pagina **Forward Paper Trading**.
+
+Il backtest dice come il segnale si sarebbe comportato sul passato; il
+forward lo verifica su dati che si srotolano in tempo reale, dove non
+esistono senno di poi né selezione a posteriori. È la validazione più
+onesta possibile senza rischiare denaro — e anche la più lenta: un sistema
+daily accumula trade con lentezza, e servono settimane o mesi per un
+campione utile. Due anni di forward valgono però più di un backtest
+ventennale, proprio perché quel record non può essere stato contaminato.
+
+**Non è una riscrittura.** Il modulo importa `signals`, `risk`, `costs` ed
+`execution` dal motore di backtest. È l'intero motivo per cui il motore è
+event-driven: se il forward avesse un codice suo, una differenza di
+risultato tra i due non sarebbe attribuibile.
+
+### Come gira
+
+Un job di GitHub Actions (`.github/workflows/paper_trading.yml`) parte
+ogni giorno feriale alle **15:00 UTC**, a mercato aperto, e ricommitta lo
+stato nel repository. Avanza quindi anche quando l'app è chiusa, e lo
+stato sopravvive ai riavvii di Streamlit Cloud. L'orario è scelto per
+cadere dentro la seduta tutto l'anno (le 11:00 a New York con l'ora
+legale, le 10:00 con quella solare) senza dover inseguire i cambi d'ora,
+che il cron non sa gestire.
+
+A differenza degli alert, che girano a mercato chiuso, qui il mercato
+**deve** essere aperto: il fill avviene al prezzo corrente, e un job
+serale registrerebbe entrate a prezzi ai quali non si sarebbe potuto
+operare.
+
+Opera sull'unione di **Universo Trading e Preferiti** — una lista più
+ampia di quella del backtest, scelta per accumulare trade più in fretta,
+al prezzo di rendere il confronto tra i due un po' meno pulito.
+
+### Esecuzione al prezzo corrente (scelta dichiarata)
+
+Il backtest riempie all'apertura della seduta successiva; il paper trader
+riempie al **prezzo corrente** nel momento in cui il segnale scatta. È la
+regola che corrisponde a come si opera davvero guardando un segnale a
+mercato aperto, ma ha una conseguenza da tenere presente: una differenza
+di expectancy tra backtest e paper non è più attribuibile al solo attrito
+del mercato, perché cambia anche la regola di esecuzione.
+
+Per non perdere del tutto l'attribuzione, ogni trade registra anche
+**l'apertura della seduta** in cui si è entrati — il prezzo a cui il
+backtest sarebbe entrato — e la pagina mostra la differenza come *costo
+del ritardo di esecuzione*, in multipli di rischio. Non è un secondo
+registro parallelo: è una colonna diagnostica sullo stesso trade.
+
+### Due dettagli che decidono la correttezza
+
+- **Il segnale usa solo barre complete.** A mercato aperto yfinance
+  include la seduta in corso, il cui "close" è solo il prezzo
+  dell'istante. Calcolare il segnale su quella barra darebbe un valore che
+  cambia di minuto in minuto e che non corrisponde a nulla di ciò che il
+  backtest ha testato. La seduta corrente viene quindi sempre esclusa.
+- **La seduta di ingresso viene riesaminata quando è completa.** Entrando
+  a metà giornata, quella barra non è ancora chiusa: segnarla subito come
+  processata farebbe sfuggire uno stop toccato nel resto della stessa
+  seduta, lasciando la posizione aperta con una perdita mai registrata.
+  Quando la barra si chiude viene riesaminata con la regola conservativa
+  dello stop-first — che può registrare una perdita legata a un minimo
+  toccato *prima* del nostro ingresso, un eccesso di prudenza coerente col
+  resto del motore.
+
+Le uscite usano le stesse funzioni del backtest (stop-first sull'ambiguità
+intrabar, gap pagati al prezzo reale) sulle barre complete, più un
+controllo del prezzo corrente a ogni esecuzione per il tocco intraday.
+
+### Calibrazione della confidenza (Stage 4)
+
+`src/engine/calibration.py` raggruppa i trade chiusi per banda di
+confidenza — le stesse bande della mappa confidenza→leva, perché calibrare
+su intervalli diversi da quelli su cui si deciderebbe la leva non direbbe
+nulla — e confronta la confidenza predetta col win rate realizzato. Un
+sistema calibrato sta vicino alla diagonale a 45°: se i segnali "70"
+vincono davvero circa il 70% delle volte, il punteggio significa qualcosa;
+se vincono il 40%, è decorazione.
+
+Ogni banda porta il proprio **intervallo di Wilson**, e una banda è
+dichiarata calibrata solo se la confidenza predetta ci cade dentro. Sotto
+i 20 trade una banda è marcata non interpretabile: con pochi dati
+l'intervallo è così largo che quasi tutto risulterebbe calibrato, ed è il
+punto in cui un diagramma di affidabilità inganna più facilmente.
+
+Il **cancello per la leva** si apre solo con tutte e tre le condizioni:
+almeno 50 trade chiusi con confidenza registrata, almeno una banda
+interpretabile, e nessuna banda interpretabile fuori calibrazione. Finché
+non si apre, la leva resta a 1,0× — che è anche il default del forward,
+coerentemente con lo Stage 3 della specifica.
+
+### Limiti dichiarati
+
+Capitale virtuale e prezzi con delay tipico di 15-20 minuti: il prezzo di
+ingresso registrato non è quello che avresti ottenuto al millisecondo. I
+parametri vengono **congelati alla prima esecuzione** e la data resta in
+`data/paper_meta.json`: ritoccarli mentre il forward gira lo
+trasformerebbe nell'ennesimo backtest ottimizzato, e la data di
+congelamento è ciò che permette di accorgersene a posteriori.
+
 ## Universo Trading: come funziona
 
 Quinta sezione della pagina **Analisi Tecnica**, persistenza in
@@ -910,6 +1018,13 @@ completa con il segnale REALE (`trade_plan`) su serie sintetiche a tre
 regimi, senza rete. `tests/test_backtest_page.py` verifica che i guardrail
 anti-autoinganno siano effettivamente presenti in pagina, non solo che la
 pagina non vada in eccezione.
+`tests/test_paper_trading.py` copre il forward: che la barra parziale
+della seduta in corso non venga mai usata per il segnale, il fill al
+prezzo corrente con registrazione dell'apertura di riferimento, e la
+regressione del bug per cui la seduta di ingresso non veniva riesaminata
+una volta completa. `tests/test_calibration.py` verifica soprattutto che
+il cancello della leva NON si apra quando non deve (campione sottile,
+bande sotto soglia, confidenza che non corrisponde al risultato).
 
 I test non scrivono mai dentro `data/`, che è versionata: l'Universo
 Trading viene rediretto su una cartella temporanea, perché un file di

@@ -1,0 +1,53 @@
+name: Forward paper trading
+
+on:
+  schedule:
+    # Giorni feriali alle 15:00 UTC. L'orario è scelto per cadere a
+    # mercato APERTO tutto l'anno: sono le 11:00 a New York con l'ora
+    # legale e le 10:00 con l'ora solare, e le 16:00/17:00 in Europa —
+    # dentro la seduta in entrambi i casi, senza dover inseguire i cambi
+    # di ora legale che il cron non sa gestire.
+    #
+    # A differenza degli alert (che girano a mercato chiuso) qui il
+    # mercato DEVE essere aperto: il paper trader esegue al prezzo
+    # corrente, e a mercato chiuso registrerebbe entrate a prezzi ai
+    # quali non si sarebbe potuto operare.
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch: {}  # esecuzione manuale da GitHub > Actions > Run workflow
+
+permissions:
+  contents: write
+
+# Due esecuzioni sovrapposte scriverebbero sullo stesso stato: la seconda
+# perderebbe le modifiche della prima o fallirebbe il push.
+concurrency:
+  group: paper-trading
+  cancel-in-progress: false
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installa dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Avanza il paper trading
+        run: PYTHONPATH=. python scripts/run_paper_trading.py
+
+      - name: Commit stato paper trading
+        run: |
+          git config user.name "portfolio-bot"
+          git config user.email "actions@github.com"
+          git add data/paper_open_positions.csv data/paper_closed_trades.csv data/paper_meta.json
+          git diff --cached --quiet || git commit -m "Paper trading $(date +'%Y-%m-%d %H:%M')"
+          # Il repository può essere cambiato mentre il job girava (es. un
+          # salvataggio dall'app): si riallinea prima di pubblicare invece
+          # di fallire il push.
+          git pull --rebase --autostash
+          git push
