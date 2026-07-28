@@ -40,9 +40,11 @@ import pandas as pd
 
 from src.engine import execution as ex
 from src.engine import signals as sig
+from src.engine import strategies
 from src.engine.costs import CostModel
 from src.engine.ledger import Ledger, OpenPosition
 from src.engine.risk import RiskConfig, size_position
+from src import technical as tech
 
 DEFAULT_INITIAL_EQUITY_EUR = 10_000.0
 
@@ -66,6 +68,9 @@ class PendingOrder:
     rr_unfavorable: bool | None = None
     stop_source: str | None = None
     target_source: str | None = None
+    # Uscita in trailing: multiplo di ATR sotto (sopra) il massimo (minimo)
+    # raggiunto dall'ingresso. None = stop fisso, comportamento originale.
+    trailing_atr_mult: float | None = None
 
 
 @dataclass
@@ -79,6 +84,14 @@ class BacktestConfig:
     # risultato sarebbe sistematicamente più bello del reale (le posizioni
     # in perdita tendono a restare aperte più a lungo).
     close_open_positions_at_end: bool = True
+    # Strategia di segnale. "murphy" è quella storica (src/technical.py
+    # tramite signals.generate_signal); le altre sono regole semplici e
+    # documentate in letteratura, definite in src/engine/strategies.py.
+    strategy: str = "murphy"
+    # Il broker è spot-only: gli short non sono eseguibili davvero. Tenerli
+    # nel backtest produce risultati non replicabili. Default False per non
+    # cambiare in silenzio il comportamento storico.
+    long_only: bool = False
     # Non eseguire i piani che `trade_plan` segnala già come sfavorevoli
     # (rapporto rischio/rendimento sotto PLAN_MIN_ACCEPTABLE_RR).
     #
@@ -157,12 +170,21 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
         by_symbol[symbol] = rows
         ordered_dates[symbol] = sorted(rows.keys())
 
+    # ATR per data, precalcolato una volta: serve allo stop in trailing e
+    # ricalcolarlo dentro il loop costerebbe quanto il loop stesso.
+    atr_by_symbol: dict[str, dict] = {}
+    for symbol, hist in histories.items():
+        atr_series = tech.atr(hist, period=14)
+        atr_by_symbol[symbol] = {_to_date(ts): (float(v) if pd.notna(v) else None)
+                                  for ts, v in atr_series.items()}
+
     ledger = Ledger(initial_equity_eur=config.initial_equity_eur)
     result = BacktestResult(ledger=ledger, config=config, symbols=sorted(histories),
                              start_date=operative_dates[0], end_date=operative_dates[-1])
 
     pending: dict[str, PendingOrder] = {}
-    warmup = sig.warmup_bars(config.horizon)
+    strategy = strategies.get(config.strategy)
+    warmup = strategy.warmup_bars(config.horizon)
     total = len(operative_dates)
 
     for i, current_date in enumerate(operative_dates):
@@ -224,6 +246,11 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 currency=currencies.get(symbol), signal_date=order.signal_date,
                 planned_rr=order.planned_rr, rr_unfavorable=order.rr_unfavorable,
                 stop_source=order.stop_source, target_source=order.target_source,
+                trailing_atr_mult=order.trailing_atr_mult,
+                # Il riferimento del trailing parte dal prezzo di ingresso:
+                # prima di quel momento la posizione non esisteva, quindi i
+                # massimi precedenti non contano.
+                trail_reference=entry_price,
             ))
 
         # --- 2. Aggiornamento e uscite sulle posizioni aperte ---
@@ -251,6 +278,16 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 exit_cost = config.costs.exit_cost_eur(exit_notional, pos.currency)
                 ledger.close_position(symbol, current_date, exit_event.price,
                                        exit_event.reason, exit_cost, gapped=exit_event.gapped)
+            elif pos.trailing_atr_mult:
+                # Trailing aggiornato SOLO dopo aver escluso l'uscita su
+                # questo bar: stringere lo stop col massimo di oggi e poi
+                # chiedersi se il minimo di oggi lo ha toccato sarebbe
+                # look-ahead intrabar.
+                atr_now = atr_by_symbol.get(symbol, {}).get(current_date)
+                pos.stop, pos.trail_reference = ex.update_trailing_stop(
+                    pos.direction, pos.stop, pos.trail_reference if pos.trail_reference is not None
+                    else pos.entry_price,
+                    bar["high"], bar["low"], atr_now or 0.0, pos.trailing_atr_mult)
 
         # --- 3./4. Segnale sul close di oggi, ordine per l'open di domani ---
         for symbol, hist in histories.items():
@@ -264,11 +301,20 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 continue
 
             hist_to_date = hist.iloc[:idx + 1]
-            plan = sig.generate_signal(symbol, hist_to_date, horizon=config.horizon)
+            plan = strategy.generate(symbol, hist_to_date, config.horizon)
             result.n_signals_evaluated += 1
             if not plan or plan.get("bias") not in ("long", "short"):
                 continue
-            if plan.get("stop") is None or plan.get("target") is None:
+            if config.long_only and plan["bias"] == "short":
+                result.n_orders_rejected += 1
+                reason = "short escluso (broker spot-only)"
+                result.rejection_reasons[reason] = result.rejection_reasons.get(reason, 0) + 1
+                continue
+            if plan.get("stop") is None:
+                continue
+            # Il target può mancare: le strategie in trailing non ne hanno
+            # uno, ed è la scelta che permette alla coda destra di esistere.
+            if plan.get("target") is None and not plan.get("trailing_atr_mult"):
                 continue
 
             if config.skip_unfavorable_rr and plan.get("rr_unfavorable"):
@@ -280,10 +326,12 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
             result.n_signals_actionable += 1
             pending[symbol] = PendingOrder(
                 symbol=symbol, direction=plan["bias"], stop=float(plan["stop"]),
-                target=float(plan["target"]), confidence=plan.get("confidence"),
+                target=float(plan["target"]) if plan.get("target") is not None else None,
+                confidence=plan.get("confidence"),
                 signal_date=current_date, signal_price=float(plan["entry"]),
                 planned_rr=plan.get("risk_reward"), rr_unfavorable=plan.get("rr_unfavorable"),
                 stop_source=plan.get("stop_source"), target_source=plan.get("target_source"),
+                trailing_atr_mult=plan.get("trailing_atr_mult"),
             )
 
         # --- 5. Mark-to-market di fine giornata ---
@@ -317,10 +365,10 @@ def _intrabar_exit_on_entry_bar(pos: OpenPosition, bar: dict) -> "ex.ExitEvent |
     il resto del bar contiene sia lo stop sia il target, vince lo stop."""
     if pos.direction == "long":
         hit_stop = bar["low"] <= pos.stop
-        hit_target = bar["high"] >= pos.target
+        hit_target = pos.target is not None and bar["high"] >= pos.target
     else:
         hit_stop = bar["high"] >= pos.stop
-        hit_target = bar["low"] <= pos.target
+        hit_target = pos.target is not None and bar["low"] <= pos.target
     if hit_stop:
         return ex.ExitEvent(price=pos.stop, reason="stop")
     if hit_target:

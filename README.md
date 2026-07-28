@@ -29,7 +29,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
 - `pages/backtest.py` — **Backtest** del piano operativo dell'Analisi Tecnica sull'Universo Trading: motore event-driven bar-by-bar (`src/engine/`), esecuzione al next-bar-open, regola stop-first sull'ambiguità intrabar, gap pagati al prezzo reale, costi Trade Republic + FX, sizing a frazione fissa del rischio, metriche in EUR e in R con intervalli di Wilson, benchmark buy-and-hold ed entrata casuale, verdetto in linguaggio piano
 - `pages/forward_paper.py` — **Forward Paper Trading**: il segnale messo alla prova in tempo reale con capitale virtuale, avanzato da un job schedulato a mercato aperto. Confronto backtest vs forward, costo del ritardo di esecuzione e curva di calibrazione della confidenza
-- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`, `diagnostics.py`
+- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`, `diagnostics.py`, `strategies.py`
 - `src/paper_store.py` — persistenza dello stato del paper trading (posizioni aperte, trade chiusi, parametri congelati), committata nel repository dal job schedulato
 - `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
@@ -40,7 +40,7 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
-- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, la diagnostica che separa problema di segnale e problema di struttura, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, la diagnostica che separa problema di segnale e problema di struttura, le strategie alternative e lo stop in trailing, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
 - `src/persistence.py` — **persistenza dichiarata**: ogni salvataggio restituisce un esito esplicito (permanente su GitHub / solo sessione / sincronizzazione fallita) e non esiste un percorso in cui il caso non permanente sia silenzioso. Streamlit Cloud non ha disco permanente: senza il collegamento a GitHub i dati si perdono al riavvio
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale
@@ -767,6 +767,67 @@ pagina lo segnala come sospetto di contaminazione, non come trionfo: il
 decadimento fuori campione è la norma (i rendimenti calano tipicamente di
 un quarto, lo Sharpe di circa un terzo).
 
+### Strategie a confronto
+
+La pagina permette di scegliere **quale segnale** testare, lasciando
+identico tutto il resto — costi, dimensionamento, regole di esecuzione,
+benchmark. È l'unico modo per rispondere a una domanda che il backtest di
+un solo algoritmo non può risolvere: *il problema è questo algoritmo o
+l'intero approccio?*
+
+- **Murphy (attuale)** — il motore completo di analisi tecnica, invariato.
+  Decine di regole interagenti, stop sul livello più vicino con buffer ATR,
+  target sul livello opposto più vicino.
+- **Rottura Donchian 55 giorni** — entra quando il prezzo supera il massimo
+  delle 55 barre precedenti. L'impianto classico dei Turtle.
+- **Trend su media 200** — long quando il prezzo sta sopra la media a 200 e
+  la media sale. La condizione sulla pendenza evita i rimbalzi dentro un
+  ribasso, che è dove un trend-following perde di più.
+- **Momentum 12-1 mesi** — long se il rendimento degli ultimi 12 mesi,
+  escluso l'ultimo, è positivo. La forma più semplice del momentum di serie
+  storica.
+
+Le tre alternative escono con uno **stop in trailing e senza obiettivo di
+prezzo**, ed è la differenza strutturale rispetto a Murphy. Un
+trend-following vive di pochi guadagni molto grandi: un target fisso alla
+resistenza più vicina li tronca per costruzione. Senza target il guadagno
+non ha tetto, ed è ciò che rende possibile la coda destra da cui dipende
+l'intera expectancy di questo stile. Il rovescio è un win rate più basso,
+perché si restituisce sempre una parte del guadagno prima di uscire.
+
+**Perché più semplici e non più sofisticate.** Ogni regola in più è una
+superficie su cui si annida l'overfitting, e un sistema con decine di
+regole interagenti è indiagnosticabile: quando perde, non sai quale pezzo
+sia il responsabile. Queste hanno due o tre parametri ciascuna, sono più
+probabili a priori e soprattutto sono falsificabili. Le soglie sono i
+valori convenzionali della letteratura (Donchian 20/55, media 200, 12-1
+mesi, stop a 2-3 ATR): **nessuna è stata scelta osservando i risultati**,
+che è precisamente ciò che questo confronto serve a evitare.
+
+Nella letteratura empirica la persistenza dei trend è l'area dell'analisi
+tecnica con l'evidenza più solida e replicata; figure grafiche e pattern di
+candele ne hanno molta meno. Le tre alternative implementano la parte con
+evidenza, ognuna in una forma classica diversa.
+
+C'è anche l'opzione **solo posizioni long**: Trade Republic è spot-only,
+quindi gli short non sono realmente eseguibili e un backtest che ci guadagna
+sopra non è replicabile con quel conto. È disattivata di default per non
+cambiare in silenzio i confronti con le esecuzioni precedenti.
+
+### Lo stop in trailing
+
+Stile Chandelier: per un long il riferimento è il massimo toccato
+dall'ingresso in poi, e lo stop sta a un multiplo di ATR sotto di esso. **Lo
+stop non arretra mai** — si stringe quando il prezzo va a favore e resta
+fermo quando torna indietro. Uno stop che si allarga quando le cose vanno
+male non è uno stop: è il modo in cui una perdita da −1R diventa una da −3R.
+
+L'aggiornamento avviene **dopo** aver verificato le uscite sul bar corrente,
+mai prima. Stringere lo stop usando il massimo di oggi e poi chiedersi se il
+minimo di oggi lo ha toccato significherebbe assumere che il massimo sia
+arrivato per primo: lo stesso look-ahead intrabar che la regola stop-first
+esiste per evitare.
+
 ### Diagnostica: dove si perde valore
 
 Un risultato negativo, da solo, non dice se il problema sia il segnale o
@@ -1069,6 +1130,9 @@ regressione del bug per cui la seduta di ingresso non veniva riesaminata
 una volta completa. `tests/test_calibration.py` verifica soprattutto che
 il cancello della leva NON si apra quando non deve (campione sottile,
 bande sotto soglia, confidenza che non corrisponde al risultato).
+`tests/test_strategies.py` verifica le strategie alternative su serie
+costruite per attivarle, la sequenza corretta dell'aggiornamento del
+trailing e il fatto che la strategia di default resti invariata.
 `tests/test_diagnostics.py` costruisce insiemi di trade in cui il
 problema è noto per costruzione — solo costi, solo uscite premature, solo
 piani sfavorevoli — e verifica che la diagnosi punti al posto giusto: se

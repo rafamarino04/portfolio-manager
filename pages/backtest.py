@@ -25,6 +25,7 @@ from src import trading_universe as tu
 from src.engine import diagnostics as diag
 from src.engine import metrics as mt
 from src.engine import runner
+from src.engine import strategies
 from src.engine.core import BacktestConfig
 from src.engine.costs import (DEFAULT_FX_COST_PCT_PER_LEG, DEFAULT_SLIPPAGE_BPS_PER_SIDE,
                                TR_BEST_PRICE_FEE_EUR, TR_DIRECT_PRICE_FEE_EUR, CostModel)
@@ -273,13 +274,29 @@ st.caption(
     "e il rischio per trade non è verificabile."
 )
 
+# Selettore di strategia: confrontare regole diverse nello STESSO apparato
+# (stessi costi, stesso sizing, stesse regole di esecuzione, stessi
+# benchmark) è l'unico modo per sapere se il problema sia un algoritmo
+# specifico o l'intero approccio.
+strategy_key = st.selectbox(
+    "Strategia di segnale", strategies.keys(), key="bt_strategy",
+    format_func=lambda k: strategies.get(k).label,
+    help="L'unica variabile che cambia tra le strategie è da dove viene il segnale: "
+         "costi, dimensionamento, regole di esecuzione e benchmark restano identici.",
+)
+_strategy = strategies.get(strategy_key)
+st.info(f"**{_strategy.label}** — {_strategy.description}")
+st.caption(f"Parametri: {_strategy.parameters}. Nessuna soglia è stata scelta osservando i "
+           "risultati: sono i valori convenzionali della letteratura.")
+
 c1, c2, c3 = st.columns(3)
 with c1:
     symbols = st.multiselect("Strumenti (Universo Trading)", universe_tickers,
                               default=universe_tickers, key="bt_symbols")
     horizon = st.selectbox("Orizzonte del segnale", ["medio", "breve"], key="bt_horizon",
-                            help="Solo orizzonti su barre daily. Il lungo termine usa barre "
-                                 "settimanali e richiederebbe un ricampionamento dedicato.")
+                            help="Rilevante solo per la strategia Murphy: le altre hanno "
+                                 "parametri propri e non dipendono dall'orizzonte. Solo barre "
+                                 "daily — il lungo termine userebbe barre settimanali.")
 with c2:
     initial_equity = st.number_input("Capitale iniziale (EUR)", min_value=1000.0, value=10_000.0,
                                       step=1000.0, key="bt_equity")
@@ -312,6 +329,12 @@ with st.expander("Impostazioni avanzate"):
              "L'out-of-sample andrebbe guardato una volta sola, dopo aver congelato i parametri: "
              "ogni sbirciata aggiuntiva lo consuma e lo trasforma di fatto in in-sample.",
     )
+    long_only = st.checkbox(
+        "Solo posizioni long", value=False, key="bt_long_only",
+        help="Trade Republic è spot-only: gli short non sono realmente eseguibili. Tenerli nel "
+             "backtest produce un risultato non replicabile con il tuo conto. Lasciato "
+             "disattivato per non cambiare in silenzio i confronti con le esecuzioni precedenti.",
+    )
     skip_bad_rr = st.checkbox(
         "Scarta i piani con rischio/rendimento sfavorevole", value=True, key="bt_skip_rr",
         help="Il piano operativo calcola già un rapporto rischio/rendimento e segnala quelli "
@@ -333,7 +356,7 @@ cost_model = CostModel(
 config = BacktestConfig(
     horizon=horizon, initial_equity_eur=initial_equity,
     risk=RiskConfig(risk_pct=risk_pct, leverage_enabled=False), costs=cost_model,
-    skip_unfavorable_rr=skip_bad_rr,
+    skip_unfavorable_rr=skip_bad_rr, strategy=strategy_key, long_only=long_only,
 )
 
 # Conteggio delle configurazioni provate in sessione: più sono, più il
@@ -346,7 +369,7 @@ st.session_state.setdefault("_bt_runs", 0)
 # indistinguibile da un blocco.
 _bars_per_year = 252
 _years = {"5y": 5, "10y": 10, "max": 15}.get(period, 10)
-_operative_bars = max(0, _years * _bars_per_year - runner.sig.HORIZON_LOOKBACK_BARS[horizon])
+_operative_bars = max(0, _years * _bars_per_year - _strategy.warmup_bars(horizon))
 _segments = 2 if run_oos else 1
 _est_seconds = len(symbols) * _operative_bars * 0.009 * (2 / 3 if not run_oos else 1)
 if symbols:
@@ -407,7 +430,8 @@ if not report:
 st.divider()
 st.markdown("### Risultati")
 st.caption(
-    f"Strumenti: {', '.join(report.symbols)} · orizzonte {report.horizon} · storico "
+    f"Strategia: **{strategies.get(report.strategy).label}** · "
+    f"strumenti: {', '.join(report.symbols)} · orizzonte {report.horizon} · storico "
     f"{report.history_start} → {report.history_end} · costi applicati: {report.cost_description}"
 )
 

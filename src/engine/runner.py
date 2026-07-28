@@ -40,6 +40,7 @@ from src import technical as tech
 from src.engine import benchmarks as bm
 from src.engine import metrics as mt
 from src.engine import signals as sig
+from src.engine import strategies
 from src.engine.core import BacktestConfig, BacktestResult, run_backtest
 
 # Frazione di storia riservata all'out-of-sample.
@@ -76,6 +77,7 @@ class FullBacktestReport:
     cost_description: str = ""
     diagnostics: list[str] = field(default_factory=list)
     configurations_tried: int = 1
+    strategy: str = "murphy"
     # Storici usati, conservati per la diagnostica: il test di qualità del
     # segnale (src/engine/diagnostics.py) deve poterli rileggere senza
     # riscaricarli, e soprattutto deve usare ESATTAMENTE gli stessi dati su
@@ -195,7 +197,7 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
     volta sola, dopo aver congelato i parametri, e ogni sbirciata
     aggiuntiva lo consuma."""
     config = config or BacktestConfig()
-    if config.horizon not in sig.SUPPORTED_HORIZONS:
+    if config.strategy == "murphy" and config.horizon not in sig.SUPPORTED_HORIZONS:
         raise ValueError(
             f"Orizzonte '{config.horizon}' non supportato dal motore di backtest. "
             f"Supportati: {', '.join(sig.SUPPORTED_HORIZONS)} (il lungo termine usa barre "
@@ -215,14 +217,16 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
                                    out_of_sample=None, split_date=None, history_start=None,
                                    history_end=None, cost_description=config.costs.describe(),
                                    diagnostics=diagnostics + ["Nessuno storico utilizzabile."],
-                                   configurations_tried=configurations_tried)
+                                   configurations_tried=configurations_tried,
+                                   strategy=config.strategy)
 
     all_dates = sorted({ts.date() if hasattr(ts, "date") else ts
                         for h in histories.values() for ts in h.index})
     split = compute_split_date(histories, oos_fraction)
 
-    warmup = sig.warmup_bars(config.horizon)
-    lookback = sig.HORIZON_LOOKBACK_BARS[config.horizon]
+    strategy = strategies.get(config.strategy)
+    warmup = strategy.warmup_bars(config.horizon)
+    lookback = sig.HORIZON_LOOKBACK_BARS.get(config.horizon, warmup)
     first_operative = all_dates[min(len(all_dates) - 1, max(warmup, lookback))]
 
     in_sample = _run_segment("In-sample", histories, currencies, config,
@@ -252,7 +256,7 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
         history_start=all_dates[0], history_end=all_dates[-1],
         cost_description=config.costs.describe(),
         diagnostics=diagnostics, configurations_tried=configurations_tried,
-        histories=histories,
+        strategy=config.strategy, histories=histories,
     )
 
 

@@ -47,12 +47,18 @@ class ExitEvent:
         return self.reason in ("stop", "gap_stop")
 
 
-def resolve_exit(direction: str, stop: float, target: float,
+def resolve_exit(direction: str, stop: float, target: float | None,
                   bar_open: float, bar_high: float, bar_low: float) -> ExitEvent | None:
     """Decide se e a quale prezzo una posizione esce durante questo bar.
 
     `direction` è "long" o "short". Ritorna None se il bar non tocca né
     stop né target.
+
+    `target` può essere **None**: è il caso delle strategie che escono solo
+    con uno stop in trailing, senza obiettivo di prezzo prefissato. Un
+    trend-following vive di pochi guadagni molto grandi, e un target fisso
+    li tronca per costruzione — quindi non averne uno non è una mancanza,
+    è la scelta che rende possibile la coda destra.
 
     Precedenze, nell'ordine in cui gli eventi accadono realmente:
       1. Gap in apertura oltre lo stop  -> fill all'open (peggio dello stop).
@@ -68,10 +74,10 @@ def resolve_exit(direction: str, stop: float, target: float,
         if bar_open <= stop:
             return ExitEvent(price=bar_open, reason="gap_stop", gapped=True)
         # 2. Apertura già sopra il target.
-        if bar_open >= target:
+        if target is not None and bar_open >= target:
             return ExitEvent(price=bar_open, reason="gap_target", gapped=True)
         hit_stop = bar_low <= stop
-        hit_target = bar_high >= target
+        hit_target = target is not None and bar_high >= target
         # 3./4. Con entrambi dentro il range vince lo stop.
         if hit_stop:
             return ExitEvent(price=stop, reason="stop")
@@ -82,10 +88,10 @@ def resolve_exit(direction: str, stop: float, target: float,
     # short: tutto specchiato
     if bar_open >= stop:
         return ExitEvent(price=bar_open, reason="gap_stop", gapped=True)
-    if bar_open <= target:
+    if target is not None and bar_open <= target:
         return ExitEvent(price=bar_open, reason="gap_target", gapped=True)
     hit_stop = bar_high >= stop
-    hit_target = bar_low <= target
+    hit_target = target is not None and bar_low <= target
     if hit_stop:
         return ExitEvent(price=stop, reason="stop")
     if hit_target:
@@ -137,3 +143,39 @@ def realized_r(direction: str, entry_price: float, exit_price: float,
         return 0.0
     delta = (exit_price - entry_price) if direction == "long" else (entry_price - exit_price)
     return delta / risk_per_unit
+
+
+def update_trailing_stop(direction: str, current_stop: float, trail_reference: float,
+                          bar_high: float, bar_low: float,
+                          atr_value: float, atr_mult: float) -> tuple[float, float]:
+    """Nuovo stop in trailing e nuovo riferimento, stile Chandelier.
+
+    Per un long il riferimento è il massimo toccato dall'ingresso in poi, e
+    lo stop sta `atr_mult` volte l'ATR sotto di esso. Per uno short è
+    specchiato sul minimo.
+
+    **Lo stop non arretra mai**: si stringe quando il prezzo va a favore e
+    resta fermo quando torna indietro. Uno stop che si allarga quando le
+    cose vanno male non è uno stop, è una speranza — ed è il modo in cui
+    una perdita da −1R diventa una da −3R.
+
+    Va chiamata DOPO aver verificato le uscite sul bar corrente, mai prima:
+    alzare lo stop usando il massimo di oggi e poi controllare se il minimo
+    di oggi lo ha toccato significherebbe assumere che il massimo sia
+    arrivato per primo — esattamente il look-ahead intrabar che la regola
+    stop-first esiste per evitare.
+
+    Ritorna `(stop, riferimento)` invariati se l'ATR non è utilizzabile:
+    meglio tenere lo stop fermo che spostarlo su un dato mancante.
+    """
+    if not atr_value or atr_value <= 0 or atr_mult <= 0:
+        return current_stop, trail_reference
+
+    if direction == "long":
+        new_reference = max(trail_reference, bar_high)
+        candidate = new_reference - atr_mult * atr_value
+        return max(current_stop, candidate), new_reference
+
+    new_reference = min(trail_reference, bar_low)
+    candidate = new_reference + atr_mult * atr_value
+    return min(current_stop, candidate), new_reference

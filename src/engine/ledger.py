@@ -27,7 +27,7 @@ class OpenPosition:
     entry_date: date
     entry_price: float
     stop: float
-    target: float
+    target: float | None
     size: float
     risk_per_unit: float
     initial_risk_eur: float   # 1R in euro
@@ -47,6 +47,12 @@ class OpenPosition:
     rr_unfavorable: bool | None = None
     stop_source: str | None = None
     target_source: str | None = None
+    # --- Uscita in trailing (non diagnostica: condiziona l'esecuzione) ---
+    # `trailing_atr_mult` None significa stop fisso. `trail_reference` è il
+    # massimo (per un long) toccato dall'ingresso in poi, da cui si misura
+    # lo stop.
+    trailing_atr_mult: float | None = None
+    trail_reference: float | None = None
 
     @property
     def notional_eur(self) -> float:
