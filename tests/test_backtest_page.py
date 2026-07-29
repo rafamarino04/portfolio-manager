@@ -14,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 
 from src import data_provider as dp
 from src import trading_universe as tu
+from src import watchlist as wl
 
 
 def _synthetic_history(n=900, seed=11) -> pd.DataFrame:
@@ -35,6 +36,17 @@ def _synthetic_history(n=900, seed=11) -> pd.DataFrame:
 class _FakeTicker:
     def __init__(self, info):
         self.info = info
+
+
+@pytest.fixture(autouse=True)
+def _preferiti_vuoti(tmp_path, monkeypatch):
+    """Anche i Preferiti vanno redirezionati: la pagina ora può girare su
+    quella lista, quindi senza questo i test dipenderebbero dal contenuto
+    reale di data/watchlist.csv."""
+    path = tmp_path / "watchlist_vuota.csv"
+    path.write_text("ticker,reference_price,note,added_date\n", encoding="utf-8")
+    monkeypatch.setattr(wl, "WATCHLIST_PATH", str(path))
+    return path
 
 
 @pytest.fixture
@@ -64,14 +76,25 @@ def universo_vuoto(tmp_path, monkeypatch):
     return path
 
 
-def test_pagina_si_ferma_con_universo_vuoto(universo_vuoto):
-    """Senza universo non c'è nulla da testare: la pagina deve spiegarlo,
-    non mostrare una configurazione inutilizzabile."""
+def test_pagina_si_ferma_con_entrambe_le_liste_vuote(universo_vuoto):
+    """Senza nessuna lista non c'è nulla da testare: la pagina deve
+    spiegarlo, non mostrare una configurazione inutilizzabile."""
     at = AppTest.from_file("pages/backtest.py")
     at.run(timeout=60)
     assert not at.exception
     text = "\n".join(i.value for i in at.info)
-    assert "Universo Trading" in text
+    assert "vuot" in text.lower()
+
+
+def test_selettore_di_lista_offre_universo_preferiti_ed_entrambe(universo_con_un_titolo):
+    """Le due liste restano separate: si possono confrontare universi
+    diversi senza che l'uno sovrascriva l'altro."""
+    at = AppTest.from_file("pages/backtest.py")
+    at.run(timeout=60)
+    assert not at.exception
+    radios = [r for r in at.radio if r.key == "bt_scope"]
+    assert radios
+    assert list(radios[0].options) == ["Universo Trading", "Preferiti", "Entrambe le liste"]
 
 
 def test_pagina_configurazione_senza_eccezioni(universo_con_un_titolo):
@@ -80,7 +103,7 @@ def test_pagina_configurazione_senza_eccezioni(universo_con_un_titolo):
     assert not at.exception
 
     keys = {w.key for w in at.selectbox} | {w.key for w in at.multiselect}
-    assert "bt_symbols" in keys
+    assert any(k.startswith("bt_symbols") for k in keys)
     assert "bt_horizon" in keys
 
 

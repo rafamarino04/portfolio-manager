@@ -29,7 +29,12 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def load_watchlist(path: str = WATCHLIST_PATH) -> pd.DataFrame:
+def load_watchlist(path: str | None = None) -> pd.DataFrame:
+    """Il percorso si risolve a ogni chiamata, non come valore di default
+    legato alla definizione della funzione: altrimenti ridefinire
+    WATCHLIST_PATH (come fanno i test, per non dipendere dal contenuto di
+    `data/`) non avrebbe alcun effetto."""
+    path = path or WATCHLIST_PATH
     if not os.path.exists(path):
         return pd.DataFrame(columns=COLUMNS)
     df = pd.read_csv(path)
@@ -40,7 +45,8 @@ def load_watchlist(path: str = WATCHLIST_PATH) -> pd.DataFrame:
     return df[COLUMNS]
 
 
-def save_watchlist(df: pd.DataFrame, path: str = WATCHLIST_PATH) -> None:
+def save_watchlist(df: pd.DataFrame, path: str | None = None) -> None:
+    path = path or WATCHLIST_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     df[COLUMNS].to_csv(path, index=False)
 

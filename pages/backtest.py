@@ -22,6 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src import trading_universe as tu
+from src import watchlist as wl
 from src.engine import diagnostics as diag
 from src.engine import metrics as mt
 from src.engine import runner
@@ -257,15 +258,50 @@ def _render_segment(segment, key_prefix: str):
 # Configurazione
 # ---------------------------------------------------------------------------
 
-universe_df = tu.load_universe()
-universe_tickers = tu.tickers(universe_df)
+# Ambito: quale lista testare. Tenerle separate permette di confrontare
+# universi diversi — per esempio una lista concentrata su un solo settore
+# contro una diversificata tra classi di attivo — senza che l'una
+# sovrascriva l'altra. Su un universo molto correlato il trend-following
+# non è una strategia diversificata ma una scommessa sola presa N volte,
+# ed è una differenza che si vede solo mettendo le due liste a confronto.
+SCOPE_UNIVERSE = "Universo Trading"
+SCOPE_FAVORITES = "Preferiti"
+SCOPE_BOTH = "Entrambe le liste"
 
-if not universe_tickers:
+
+def _favorite_tickers() -> list[str]:
+    watch = wl.load_watchlist()
+    if watch.empty:
+        return []
+    return sorted(t for t in watch["ticker"].astype(str).str.strip().str.upper().unique()
+                  if t and t.lower() != "nan")
+
+
+universe_tickers = tu.tickers(tu.load_universe())
+favorite_tickers = _favorite_tickers()
+
+if not universe_tickers and not favorite_tickers:
     st.info(
-        "L'Universo Trading è vuoto. Il backtest gira sulla lista che hai selezionato per il "
-        "trading: popolala dalla pagina Analisi Tecnica (tab Universo Trading o Idoneità al "
-        "Trading) e torna qui."
+        "Universo Trading e Preferiti sono entrambi vuoti. Il backtest gira su una di queste due "
+        "liste: popolane almeno una dalla pagina Analisi Tecnica e torna qui."
     )
+    st.stop()
+
+scope = st.radio(
+    "Lista da testare", [SCOPE_UNIVERSE, SCOPE_FAVORITES, SCOPE_BOTH],
+    horizontal=True, key="bt_scope",
+    help="Le due liste restano separate: puoi confrontare universi diversi senza che l'uno "
+         "sovrascriva l'altro.",
+)
+if scope == SCOPE_UNIVERSE:
+    available_tickers = universe_tickers
+elif scope == SCOPE_FAVORITES:
+    available_tickers = favorite_tickers
+else:
+    available_tickers = sorted(set(universe_tickers) | set(favorite_tickers))
+
+if not available_tickers:
+    st.warning(f"La lista «{scope}» è vuota: scegline un'altra o popolala dalla pagina Analisi Tecnica.")
     st.stop()
 
 st.markdown("### Configurazione")
@@ -291,8 +327,8 @@ st.caption(f"Parametri: {_strategy.parameters}. Nessuna soglia è stata scelta o
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    symbols = st.multiselect("Strumenti (Universo Trading)", universe_tickers,
-                              default=universe_tickers, key="bt_symbols")
+    symbols = st.multiselect(f"Strumenti ({scope})", available_tickers,
+                              default=available_tickers, key=f"bt_symbols_{scope}")
     horizon = st.selectbox("Orizzonte del segnale", ["medio", "breve"], key="bt_horizon",
                             help="Rilevante solo per la strategia Murphy: le altre hanno "
                                  "parametri propri e non dipendono dall'orizzonte. Solo barre "
@@ -430,7 +466,7 @@ if not report:
 st.divider()
 st.markdown("### Risultati")
 st.caption(
-    f"Strategia: **{strategies.get(report.strategy).label}** · "
+    f"Strategia: **{strategies.get(report.strategy).label}** · lista: **{scope}** · "
     f"strumenti: {', '.join(report.symbols)} · orizzonte {report.horizon} · storico "
     f"{report.history_start} → {report.history_end} · costi applicati: {report.cost_description}"
 )
