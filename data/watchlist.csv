@@ -1,9 +1,20 @@
 ticker,reference_price,note,added_date
-SXR8.DE,,ETF azionario USA - iShares Core S&P 500 UCITS Acc - ISIN IE00B5BMR087 - TER 0.07% - EUR su Xetra,2026-07-28
-EXSA.DE,,ETF azionario Europa - iShares STOXX Europe 600 UCITS Dist - ISIN DE0002635307 - TER 0.20% - EUR,2026-07-28
-EXX7.DE,,ETF azionario Giappone - iShares Nikkei 225 UCITS - ISIN DE000A0H08D2 - EUR su Xetra,2026-07-28
-IS3N.DE,,ETF azionario emergenti - iShares Core MSCI EM IMI UCITS Acc - ISIN IE00BKM4GZ66 - TER 0.18%,2026-07-28
-4GLD.DE,,ETC oro fisico - Xetra-Gold - ISIN DE000A0S9GB0 - TER 0% - driver scorrelato dall'azionario,2026-07-28
-EXXY.DE,,ETF materie prime - iShares Diversified Commodity Swap UCITS - ISIN DE000A0H0728 - Bloomberg Commodity,2026-07-28
-IBCL.DE,,ETF obbligazioni governative euro 15-30 anni - ISIN IE00B1FZS913 - TER 0.15% - duration lunga,2026-07-28
-IQQ6.DE,,ETF immobiliare quotato - iShares Developed Markets Property Yield - ISIN IE00B1FZS350 - TER 0.59%,2026-07-28
+SXR8.DE,,Azionario USA S&P 500 - ISIN IE00B5BMR087 - TER 0.07%,2026-07-28
+EXXT.DE,,Azionario USA Nasdaq 100 - iShares NASDAQ-100 UCITS (DE),2026-07-28
+EXSA.DE,,Azionario Europa STOXX 600 - ISIN DE0002635307 - TER 0.20%,2026-07-28
+EXSI.DE,,Azionario area euro - iShares EURO STOXX UCITS (DE),2026-07-28
+EXX7.DE,,Azionario Giappone Nikkei 225 - ISIN DE000A0H08D2,2026-07-28
+IS3N.DE,,Azionario emergenti MSCI EM IMI - ISIN IE00BKM4GZ66 - TER 0.18%,2026-07-28
+EXV1.DE,,Settore banche Europa - iShares STOXX Europe 600 Banks,2026-07-28
+EXV3.DE,,Settore tecnologia Europa - iShares STOXX Europe 600 Technology,2026-07-28
+EXV4.DE,,Settore sanita Europa - iShares STOXX Europe 600 Health Care,2026-07-28
+EXH1.DE,,Settore energia Europa - iShares STOXX Europe 600 Oil & Gas,2026-07-28
+EXV6.DE,,Settore materie di base Europa - iShares STOXX Europe 600 Basic Resources,2026-07-28
+EXH4.DE,,Settore industriali Europa - iShares STOXX Europe 600 Industrial Goods,2026-07-28
+4GLD.DE,,Oro fisico - Xetra-Gold ETC - ISIN DE000A0S9GB0 - TER 0%,2026-07-28
+8PSG.DE,,Oro fisico alternativo - Invesco Physical Gold ETC,2026-07-28
+00XR.DE,,Argento con copertura EUR - WisdomTree Silver EUR Daily Hedged,2026-07-28
+00XM.DE,,Petrolio WTI con copertura EUR - WisdomTree WTI Crude Oil EUR Hedged,2026-07-28
+EXXY.DE,,Materie prime ampio - iShares Diversified Commodity Swap - ISIN DE000A0H0728,2026-07-28
+IBCL.DE,,Obbligazioni governative euro 15-30 anni - ISIN IE00B1FZS913 - TER 0.15%,2026-07-28
+IQQ6.DE,,Immobiliare quotato mondiale - ISIN IE00B1FZS350 - TER 0.59%,2026-07-28

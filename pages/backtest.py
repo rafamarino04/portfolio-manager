@@ -25,6 +25,7 @@ from src import trading_universe as tu
 from src import watchlist as wl
 from src.engine import diagnostics as diag
 from src.engine import metrics as mt
+from src.engine import risk_simulation as rsim
 from src.engine import runner
 from src.engine import strategies
 from src.engine.core import BacktestConfig
@@ -665,6 +666,73 @@ else:
             "La statistica t è indicativa: le osservazioni si sovrappongono nel tempo e non sono "
             "indipendenti, quindi va letta come ordine di grandezza e non come test formale."
         )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Quanto rischiare per trade
+# ---------------------------------------------------------------------------
+
+st.markdown("### Quanto rischiare per trade")
+st.caption(
+    "Il rendimento atteso è lineare nel rischio: raddoppi il rischio, raddoppi il rendimento. "
+    "È il lato che si guarda volentieri. Il drawdown però raddoppia anche lui, e la sua coda "
+    "cresce peggio — quindi la scelta va fatta guardando entrambi i lati insieme. La simulazione "
+    "ricampiona gli R-multipli **realmente prodotti da questo backtest**, non una distribuzione "
+    "teorica: la forma asimmetrica del trend-following (molte piccole perdite, pochi guadagni "
+    "grandi) è proprio ciò che una formula gaussiana distruggerebbe."
+)
+
+_trades = seg.backtest.ledger.closed_trades
+_span_days = None
+if report.in_sample.backtest.start_date and report.in_sample.backtest.end_date:
+    _span_days = (report.in_sample.backtest.end_date - report.in_sample.backtest.start_date).days
+_freq = rsim.trades_per_year_from(_trades, _span_days)
+
+if not _trades or _freq <= 0:
+    st.info("Servono trade chiusi per simulare l'effetto del rischio.")
+else:
+    tolleranza = st.slider(
+        "Drawdown che sei disposto a subire (%)", 5, 60, 25, 5, key="bt_dd_tolerance",
+        help="La soglia oltre la quale abbandoneresti il sistema. È il vincolo vero: un sistema "
+             "abbandonato durante il suo drawdown peggiore ha reso, per chi lo ha abbandonato, "
+             "esattamente quel drawdown.",
+    )
+    sim = rsim.simulate([t.net_r for t in _trades], trades_per_year=_freq)
+
+    if not sim.scenarios:
+        for nota in sim.notes:
+            st.warning(nota)
+    else:
+        st.caption(
+            f"Basata su {sim.n_trades_sampled} trade osservati, frequenza {sim.trades_per_year:.0f} "
+            f"trade/anno, expectancy {sim.expectancy_r:+.2f}R, orizzonte {sim.years} anni, "
+            f"{sim.paths} simulazioni."
+        )
+        righe = []
+        for sc in sim.scenarios:
+            righe.append({
+                "Rischio per trade": f"{sc.risk_pct:g}%",
+                "Rendimento annuo": f"{sc.median_annual_return_pct:+.1f}%",
+                "Drawdown tipico": f"{sc.median_max_drawdown_pct:.0f}%",
+                "Drawdown 5% peggiore": f"{sc.p95_max_drawdown_pct:.0f}%",
+                "P(oltre 20%)": f"{sc.prob_drawdown_over[0.20]:.0f}%",
+                "P(oltre 35%)": f"{sc.prob_drawdown_over[0.35]:.0f}%",
+                "Perdite di fila": f"{sc.median_worst_losing_streak:.0f}",
+                "Rendimento/dolore": f"{sc.return_to_pain:.2f}" if sc.return_to_pain else "n/d",
+            })
+        st.dataframe(pd.DataFrame(righe), use_container_width=True, hide_index=True,
+                      key="bt_risk_table")
+
+        st.info(rsim.build_recommendation(sim, tolleranza))
+        st.caption(
+            "Guarda la colonna **rendimento/dolore**: resta praticamente identica a ogni livello "
+            "di rischio. È la dimostrazione numerica che alzare il rischio non rende il sistema "
+            "migliore — lo rende più grande, in entrambe le direzioni. L'unico modo di migliorare "
+            "quel rapporto è migliorare il segnale o aumentare il numero di strumenti, non la size."
+        )
+        for nota in sim.notes:
+            st.warning(nota)
 
 disclaimer(
     "Un backtest non è una previsione: è la misura di come un insieme di regole si sarebbe "
