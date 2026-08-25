@@ -1,7 +1,7 @@
 {
-  "equity_eur": 9349.32688531475,
+  "equity_eur": 9355.336801700232,
   "started_at": "2026-07-28T18:59:37",
-  "last_run_at": "2026-08-24T15:32:02",
+  "last_run_at": "2026-08-25T15:35:34",
   "config": {
     "horizon": "medio",
     "initial_equity_eur": 10000.0,
