@@ -318,3 +318,100 @@ def test_verdetto_senza_trade():
     m = mt.compute_metrics([], [], 10_000)
     v = mt.build_verdict(m, None, None)
     assert v["verdict"] == mt.VERDICT_UNPROVEN
+
+
+# ---------------------------------------------------------------------------
+# Sostenibilità del costo: una posizione troncata dai cap non si apre
+#
+# Difetto reale trovato sul forward paper trading del 28/07–10/09/2026: i
+# cap aggregati riducevano la size invece di rifiutare il trade, e la
+# commissione fissa (che non scala) rendeva il costo in R esplosivo. Su
+# EXXY.DE del 26/08 un normale −1,0R lordo è diventato −5,09R netto.
+# ---------------------------------------------------------------------------
+
+from src.engine.costs import CostModel
+from src.engine.risk import MAX_COST_FRACTION_OF_R
+
+
+def _costi_tr_eur() -> CostModel:
+    """Costi reali su strumento in euro: 1 EUR a ordine + 5 bp per lato."""
+    return CostModel(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5,
+                     slippage_bps_per_side=5.0)
+
+
+def test_posizione_troncata_dai_cap_viene_rifiutata_non_aperta():
+    """Il caso storico: budget di rischio quasi esaurito, la size residua
+    è una briciola e la commissione fissa vale multipli di R."""
+    config = RiskConfig(risk_pct=0.75, max_aggregate_open_risk_pct=5.0)
+    equity = 9_300.0
+    # Rischio aperto a un soffio dal tetto: restano pochi centesimi.
+    quasi_al_tetto = equity * 5.0 / 100.0 - 0.60
+
+    r = size_position(equity, entry=34.80, stop=34.24, confidence=87,
+                      config=config, open_risk_eur=quasi_al_tetto,
+                      costs=_costi_tr_eur(), currency="EUR")
+
+    assert not r.is_tradable
+    assert "costo di esecuzione" in r.rejected_reason
+    assert r.estimated_cost_in_r > 1.0
+
+
+def test_senza_il_controllo_la_stessa_posizione_sarebbe_stata_aperta():
+    """Verifica che il test sopra stia davvero cogliendo il difetto e non
+    un rifiuto per altro motivo: senza passare i costi, il vecchio
+    comportamento apre la posizione."""
+    config = RiskConfig(risk_pct=0.75, max_aggregate_open_risk_pct=5.0)
+    equity = 9_300.0
+    quasi_al_tetto = equity * 5.0 / 100.0 - 0.60
+
+    r = size_position(equity, entry=34.80, stop=34.24, confidence=87,
+                      config=config, open_risk_eur=quasi_al_tetto)
+    assert r.is_tradable
+    assert r.initial_risk_eur < 1.0          # la briciola incriminata
+
+
+def test_trade_normale_non_viene_toccato_dal_controllo():
+    """La valvola non deve cambiare il comportamento sui trade sani: è il
+    motivo per cui la soglia è larga."""
+    r = size_position(10_000, entry=100, stop=95, confidence=60,
+                      config=RiskConfig(risk_pct=0.75),
+                      costs=_costi_tr_eur(), currency="EUR")
+    assert r.is_tradable
+    assert r.estimated_cost_in_r < MAX_COST_FRACTION_OF_R
+
+
+def test_il_costo_stimato_e_esposto_anche_quando_il_trade_passa():
+    """Serve a poter mostrare quanto si paga PRIMA di aprire."""
+    r = size_position(10_000, 100, 95, 60, RiskConfig(),
+                      costs=_costi_tr_eur(), currency="EUR")
+    assert r.estimated_round_trip_cost_eur > 0
+    assert r.estimated_cost_in_r == pytest.approx(
+        r.estimated_round_trip_cost_eur / r.initial_risk_eur)
+
+
+def test_il_costo_fx_rende_piu_severa_la_soglia():
+    """Stesso trade in dollari: l'FX all'0,5% per gamba pesa quanto uno
+    stop stretto, e il costo in R raddoppia abbondantemente."""
+    eur = size_position(10_000, 100, 99, 60, RiskConfig(),
+                        costs=_costi_tr_eur(), currency="EUR")
+    usd = size_position(10_000, 100, 99, 60, RiskConfig(),
+                        costs=_costi_tr_eur(), currency="USD")
+    assert usd.estimated_cost_in_r > eur.estimated_cost_in_r
+
+
+def test_soglia_configurabile_senza_toccare_il_motore():
+    """La Fase 3 deve poter stringere a 0,10 (vincolo di progetto della
+    strategia) senza modificare codice."""
+    severo = RiskConfig(risk_pct=0.75, max_cost_fraction_of_r=0.10)
+    r = size_position(10_000, entry=100, stop=99, confidence=60, config=severo,
+                      costs=_costi_tr_eur(), currency="USD")
+    assert not r.is_tradable
+    assert "0.10R" in r.rejected_reason
+
+
+def test_senza_modello_di_costo_il_controllo_non_si_attiva():
+    """Retrocompatibilità: i chiamanti che non passano i costi (e i test
+    che verificano altro) devono continuare a funzionare."""
+    r = size_position(10_000, 100, 95, 60, RiskConfig())
+    assert r.is_tradable
+    assert r.estimated_cost_in_r is None

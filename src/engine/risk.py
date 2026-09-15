@@ -72,6 +72,30 @@ HARD_MAX_RISK_PCT_PER_TRADE = 1.5
 HARD_MAX_GROSS_EXPOSURE = 1.5
 HARD_MAX_AGGREGATE_OPEN_RISK_PCT = 5.0
 
+# Frazione massima di R che il costo di round trip può assorbire perché il
+# trade abbia ancora senso aprirlo.
+#
+# **Perché esiste.** I cap aggregati qui sotto non rifiutano un trade: ne
+# *riducono* la size a quanto resta nel budget. Ma la commissione per
+# ordine è FISSA e non scala con la size, quindi una posizione troncata
+# paga gli stessi euro di commissione su un rischio molto più piccolo, e
+# il costo in R esplode. Misurato sul forward paper trading del
+# 28/07–10/09/2026: tre trade aperti con un rischio residuo di 0,59 €,
+# 1,65 € e 2,05 € contro i ~70 € nominali, di cui uno (EXXY.DE, 26/08) ha
+# trasformato un normale −1,0R lordo in −5,09R netto. Da soli spiegano
+# circa due terzi della perdita del periodo.
+#
+# **Il numero è una scelta soggettiva, dichiarata come tale.** A un terzo
+# di R di costo, il segnale deve essere sensibilmente migliore del
+# pareggio solo per ripagare l'esecuzione. Non è una soglia derivata da
+# una fonte: è una valvola di sicurezza contro le posizioni degenerate,
+# scelta larga di proposito perché non deve cambiare il comportamento del
+# sistema sui trade normali, solo impedire quelli che non possono
+# funzionare. Il vincolo di *progetto* della strategia (costo ≤ 10% di R,
+# che implica strumenti in euro e stop larghi) è una cosa diversa e più
+# stringente, e va imposto scegliendo l'universo e l'orizzonte, non qui.
+MAX_COST_FRACTION_OF_R = 1 / 3
+
 
 def leverage_for_confidence(confidence: float | None, enabled: bool = False) -> float:
     """Moltiplicatore di leva per un punteggio di confidenza 0-100.
@@ -100,6 +124,10 @@ class RiskConfig:
     # Un solo trade aperto per strumento: evita di accumulare esposizione
     # sullo stesso rischio senza dichiararlo.
     one_position_per_symbol: bool = True
+    # Vedi MAX_COST_FRACTION_OF_R: è un parametro, non una costante
+    # sepolta, così la Fase 3 può stringerlo a 0,10 senza toccare il
+    # codice del motore.
+    max_cost_fraction_of_r: float = MAX_COST_FRACTION_OF_R
 
     def __post_init__(self):
         if self.risk_pct > MAX_BASE_RISK_PCT:
@@ -115,6 +143,11 @@ class SizingResult:
     initial_risk_eur: float          # questo è 1R in euro
     leverage: float
     notional_eur: float
+    # Costo di round trip stimato al momento del sizing, in euro e in
+    # multipli di R. Conservato anche quando il trade è accettato: serve a
+    # poter mostrare quanto si sta pagando PRIMA di aprire, non solo dopo.
+    estimated_round_trip_cost_eur: float | None = None
+    estimated_cost_in_r: float | None = None
     rejected_reason: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -125,7 +158,8 @@ class SizingResult:
 
 def size_position(equity_eur: float, entry: float, stop: float, confidence: float | None,
                    config: RiskConfig, open_gross_exposure_eur: float = 0.0,
-                   open_risk_eur: float = 0.0) -> SizingResult:
+                   open_risk_eur: float = 0.0, costs=None,
+                   currency: str | None = None) -> SizingResult:
     """Size a frazione fissa del rischio, con leva da confidenza e tutti i
     cap rigidi applicati in cascata.
 
@@ -187,11 +221,39 @@ def size_position(equity_eur: float, entry: float, stop: float, confidence: floa
         return SizingResult(0.0, risk_per_unit, 0.0, leverage, 0.0,
                             rejected_reason="size risultante nulla")
 
+    initial_risk_eur = size * risk_per_unit
+
+    # Sostenibilità del costo. Si stima il round trip assumendo il
+    # controvalore di uscita uguale a quello di ingresso: è
+    # l'approssimazione onesta possibile prima di aprire, perché il prezzo
+    # di uscita non è noto. Sottostima leggermente il costo sui trade
+    # vincenti (che escono su un controvalore maggiore), quindi la soglia
+    # non risulta mai più permissiva di quanto dichiara.
+    estimated_cost_eur = None
+    estimated_cost_in_r = None
+    if costs is not None and initial_risk_eur > 0:
+        estimated_cost_eur = costs.round_trip_cost_eur(notional, notional, currency)
+        estimated_cost_in_r = estimated_cost_eur / initial_risk_eur
+        if estimated_cost_in_r > config.max_cost_fraction_of_r:
+            return SizingResult(
+                0.0, risk_per_unit, 0.0, leverage, 0.0,
+                estimated_round_trip_cost_eur=estimated_cost_eur,
+                estimated_cost_in_r=estimated_cost_in_r,
+                rejected_reason=(
+                    f"costo di esecuzione {estimated_cost_in_r:.2f}R oltre il tetto "
+                    f"{config.max_cost_fraction_of_r:.2f}R: posizione troppo piccola per "
+                    "ripagare le commissioni"
+                ),
+                warnings=warnings,
+            )
+
     return SizingResult(
         size=size,
         risk_per_unit=risk_per_unit,
-        initial_risk_eur=size * risk_per_unit,
+        initial_risk_eur=initial_risk_eur,
         leverage=leverage,
         notional_eur=notional,
+        estimated_round_trip_cost_eur=estimated_cost_eur,
+        estimated_cost_in_r=estimated_cost_in_r,
         warnings=warnings,
     )

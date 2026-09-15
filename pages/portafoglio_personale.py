@@ -348,8 +348,10 @@ if tracked is not None:
     st.plotly_chart(fig_t, use_container_width=True)
 else:
     st.info(
-        "Non ci sono ancora abbastanza report settimanali salvati per tracciare l'andamento nel "
-        "tempo. Il grafico si arricchisce automaticamente ogni lunedì."
+        "Non ci sono ancora report settimanali salvati per tracciare l'andamento nel tempo. "
+        "La generazione automatica è sospesa finché il Registro Transazioni contiene solo i "
+        "movimenti di esempio: appena registri un movimento reale e riattivi il job "
+        "settimanale, il grafico ricomincia ad arricchirsi."
     )
 
 st.markdown("**Rendimento per prodotto**")

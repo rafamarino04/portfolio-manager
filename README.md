@@ -15,6 +15,35 @@ operativo. I prezzi arrivano da Yahoo Finance (via libreria `yfinance`)
 con un delay tipico di 15-20 minuti — ottimo per decisioni ponderate, non
 per trading attivo.
 
+## Stato del progetto (14 settembre 2026)
+
+Il ramo di trading sistematico è **in pausa dichiarata** dopo la diagnosi
+sul forward paper trading del 28/07–10/09/2026 (21 trade chiusi):
+
+- somma dei risultati **lordi +2,94 R**, somma dei **netti −8,79 R**: il
+  segnale non è negativo, sono i costi a divorarlo. Con `costo_in_R =
+  costo% / stop%`, una durata mediana di 3 giorni e uno stop mediano
+  dell'1,6% non sono compatibili con un round trip che costa ~1,1% in
+  valuta estera;
+- tre trade erano stati aperti con un rischio residuo di 0,59 €, 1,65 € e
+  2,05 € invece dei ~70 € nominali, perché i cap aggregati *riducevano* la
+  size invece di rifiutare il trade. La commissione fissa non scala: uno di
+  questi ha trasformato un normale −1,0R lordo in −5,09R netto. **Corretto**
+  (vedi `MAX_COST_FRACTION_OF_R` in `src/engine/risk.py`);
+- il forward paper trading non passava dal registro delle strategie: ha
+  testato per sei settimane il segnale Murphy invece della Donchian, l'unica
+  con un risultato positivo. **Da correggere prima di riattivarlo.**
+
+Nel frattempo `data/transactions.csv` conteneva ancora i movimenti di
+esempio, e il job settimanale ha prodotto otto report su un patrimonio
+inventato di 173.336 €. Quei report sono archiviati in `reports/esempio/`
+e la generazione è ora bloccata all'origine.
+
+La priorità è stata riordinata: **prima il portafoglio reale** (valore
+certo), poi lo screening periodico fondamentale/fattori (valore probabile),
+per ultimo il trading (valore incerto). Il dettaglio è nel documento di
+diagnosi e ripartenza.
+
 **Design**: tema scuro ispirato ai terminali finanziari (sfondo quasi
 nero, card a bordo sottile, cifre in monospace, un solo colore d'accento)
 invece della classica dashboard chiara da gestionale — pensato per
@@ -35,12 +64,13 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
-- `scripts/generate_weekly_report.py` — genera il report periodico in background (lanciato ogni lunedì da GitHub Actions); non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository
-- `scripts/run_paper_trading.py` — avanza il forward paper trading di un passo (lanciato ogni giorno feriale alle 15:00 UTC da GitHub Actions, a mercato aperto) e ricommitta lo stato nel repository
+- `scripts/generate_weekly_report.py` — genera il report periodico in background; non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository. **Schedulazione sospesa dal 14/09/2026**: si rifiuta di generare finché `data/transactions.csv` contiene solo i movimenti di esempio (vedi `src/example_data.py`)
+- `scripts/run_paper_trading.py` — avanza il forward paper trading di un passo (a mercato aperto) e ricommitta lo stato nel repository. **Schedulazione sospesa dal 14/09/2026**: il paper trading gira sul segnale Murphy e non passa dal registro delle strategie, quindi stava accumulando evidenza sulla strategia sbagliata
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `tests/` — test automatici (pytest): logica di gerarchia tra orizzonti e piano operativo su fixture sintetiche (nessuna rete richiesta), i sei criteri del Technical Tradeability Score, la persistenza dell'Universo Trading, il fatto che un salvataggio non permanente non sia mai silenzioso, il forward paper trading (barra parziale mai usata, fill al prezzo corrente, riesame della seduta di ingresso) e la calibrazione, la diagnostica che separa problema di segnale e problema di struttura, le strategie alternative e lo stop in trailing, le regole di esecuzione del motore di backtest (next-bar-open, stop-first, gap), sizing e metriche, più AppTest sulle pagine Analisi Tecnica e Backtest
+- `src/example_data.py` — **blocco sui dati di esempio**: riconosce per impronta dei movimenti se `data/transactions.csv` è ancora quello distribuito col progetto, e impedisce alle automazioni di produrre artefatti su un portafoglio inventato. Basta un movimento vero perché il blocco cada da solo
 - `src/persistence.py` — **persistenza dichiarata**: ogni salvataggio restituisce un esito esplicito (permanente su GitHub / solo sessione / sincronizzazione fallita) e non esiste un percorso in cui il caso non permanente sia silenzioso. Streamlit Cloud non ha disco permanente: senza il collegamento a GitHub i dati si perdono al riavvio
 - `src/email_alerts.py` — costruzione e invio dell'email di alert via Gmail SMTP
 - `data/transactions.csv` — **fonte di verità**: il registro di ogni movimento reale

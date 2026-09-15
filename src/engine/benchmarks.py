@@ -230,8 +230,12 @@ def random_entry_monte_carlo(histories: dict[str, pd.DataFrame], n_trades_target
                 stop = entry_price + stop_atr_mult * atr_val
                 target = entry_price - target_atr_mult * atr_val
 
+            # Stessi costi e stessa regola di rifiuto del motore reale: un
+            # benchmark che può aprire posizioni che la strategia non
+            # potrebbe aprire non è più un termine di paragone.
             sizing = size_position(ledger.equity_eur, entry_price, stop, None, risk,
-                                    ledger.open_gross_exposure_eur(), ledger.open_risk_eur())
+                                    ledger.open_gross_exposure_eur(), ledger.open_risk_eur(),
+                                    costs=costs, currency=d["currency"])
             if not sizing.is_tradable:
                 continue
 

@@ -256,13 +256,14 @@ def step(symbols: list[str], state: PaperState, config: PaperConfig,
                 f"Prezzo corrente {price:.2f} già oltre lo stop pianificato {stop:.2f}: nessuna apertura."))
             continue
 
+        currency = currency_fn(symbol)
         sizing = size_position(state.equity_eur, price, stop, plan.get("confidence"), risk_cfg,
-                                state.open_gross_exposure_eur(), state.open_risk_eur())
+                                state.open_gross_exposure_eur(), state.open_risk_eur(),
+                                costs=costs, currency=currency)
         if not sizing.is_tradable:
             events.append(StepEvent("scarto", symbol, f"Nessuna apertura: {sizing.rejected_reason}."))
             continue
 
-        currency = currency_fn(symbol)
         entry_cost = costs.entry_cost_eur(sizing.notional_eur, currency)
         signal_date = _as_date(hist.index[-1])
 

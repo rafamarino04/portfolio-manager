@@ -229,6 +229,11 @@ def run_backtest(histories: dict[str, pd.DataFrame], config: BacktestConfig | No
                 confidence=order.confidence, config=config.risk,
                 open_gross_exposure_eur=ledger.open_gross_exposure_eur(),
                 open_risk_eur=ledger.open_risk_eur(),
+                # Il sizing deve conoscere i costi: una posizione troncata
+                # dai cap aggregati può diventare troppo piccola per
+                # ripagare la commissione fissa, e va rifiutata invece che
+                # aperta (vedi MAX_COST_FRACTION_OF_R in risk.py).
+                costs=config.costs, currency=currencies.get(symbol),
             )
             if not sizing.is_tradable:
                 result.n_orders_rejected += 1

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src import benchmark as bm  # noqa: E402
 from src import data_provider as dp  # noqa: E402
+from src import example_data  # noqa: E402
 from src import opportunities as opp  # noqa: E402
 from src import portfolio as pf  # noqa: E402
 from src import rebalancing as rb  # noqa: E402
@@ -166,6 +167,14 @@ def build_report(raw, enriched, summary, settings: dict, today: str, tx_stats: d
 
 
 def main():
+    # Blocco sui dati di esempio. Vedi src/example_data.py: fra luglio e
+    # settembre 2026 questo script ha prodotto otto report su un
+    # portafoglio inventato, indistinguibili da report veri. Finché il
+    # registro non contiene movimenti reali non si genera nulla.
+    if example_data.transactions_are_example(TX_PATH):
+        print(example_data.BLOCK_MESSAGE)
+        return 1
+
     today = dt.date.today().isoformat()
     settings = cfg.load_settings(SETTINGS_PATH)
     raw = pf.load_portfolio(CSV_PATH)
@@ -194,6 +203,7 @@ def main():
 
     append_history(summary, today)
     print(f"Report generato: reports/{today}.md")
+    return 0
 
 
 if __name__ == "__main__":
