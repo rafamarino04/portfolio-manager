@@ -48,7 +48,7 @@ import pandas as pd
 
 from src import data_provider as dp
 from src.engine import execution as ex
-from src.engine import signals as sig
+from src.engine import strategies
 from src.engine.costs import CostModel
 from src.engine.risk import RiskConfig, size_position
 
@@ -75,6 +75,13 @@ class PaperConfig:
     perché ritoccarli mentre il forward gira lo trasformerebbe in un
     ennesimo backtest ottimizzato."""
     horizon: str = "medio"
+    # Strategia congelata. Fino al 15/09/2026 questo modulo chiamava il
+    # generatore di segnali direttamente, senza passare dal registro: il
+    # forward ha quindi testato per sei settimane il segnale Murphy mentre
+    # il backtest confrontava quattro strategie diverse. Backtest e forward
+    # DEVONO girare sulla stessa strategia, altrimenti il confronto fra i
+    # due — che è l'intero scopo del forward — misura cose diverse.
+    strategy: str = strategies.DEFAULT_STRATEGY
     initial_equity_eur: float = 10_000.0
     risk_pct: float = 0.75
     # Stage 3: si opera SEMPRE a 1.0x. La leva si sblocca solo dopo che la
@@ -199,6 +206,7 @@ def step(symbols: list[str], state: PaperState, config: PaperConfig,
 
     risk_cfg = config.risk_config()
     costs = config.cost_model()
+    strategy = strategies.get(config.strategy)
     events: list[StepEvent] = []
 
     if not state.started_at:
@@ -224,13 +232,32 @@ def step(symbols: list[str], state: PaperState, config: PaperConfig,
             continue
         if state.has_position(symbol):
             continue
-        if len(hist) < sig.warmup_bars(config.horizon):
+        if len(hist) < strategy.warmup_bars(config.horizon):
             continue
 
-        plan = sig.generate_signal(symbol, hist, horizon=config.horizon)
+        # Filtro di valuta della strategia, applicato prima di generare il
+        # segnale. Dichiarato come evento: un universo ridotto in silenzio
+        # cambia il confronto con il backtest.
+        if strategy.allowed_currencies:
+            ammesse = {c.upper() for c in strategy.allowed_currencies}
+            try:
+                valuta = (currency_fn(symbol) or "").upper()
+            except Exception:
+                valuta = ""
+            if valuta not in ammesse:
+                events.append(StepEvent(
+                    "scarto", symbol,
+                    f"Valuta {valuta or 'sconosciuta'}: la strategia opera solo in "
+                    f"{'/'.join(sorted(ammesse))}."))
+                continue
+
+        plan = strategy.generate(symbol, hist, config.horizon)
         if not plan or plan.get("bias") not in ("long", "short"):
             continue
-        if plan.get("stop") is None or plan.get("target") is None:
+        # Lo stop è obbligatorio: senza non esiste 1R e non si può
+        # dimensionare. Il target NO: le strategie in trailing non ne hanno,
+        # e pretenderlo qui le escludeva tutte in silenzio.
+        if plan.get("stop") is None:
             continue
         if config.skip_unfavorable_rr and plan.get("rr_unfavorable"):
             events.append(StepEvent(

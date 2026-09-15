@@ -24,6 +24,7 @@ from src import watchlist as wl
 from src.engine import calibration as cal
 from src.engine import metrics as mt
 from src.engine import paper
+from src.engine import strategies
 from src.theme import ACCENT, BLUE, TEXT_MUTED, apply_theme, badge, disclaimer
 
 apply_theme()
@@ -72,10 +73,23 @@ if not symbols:
         "lavorare dalla prima esecuzione utile."
     )
 
+def _strategia_label(key: str) -> str:
+    """La strategia va mostrata insieme al resto dei parametri congelati.
+
+    Fino al 15/09/2026 non compariva da nessuna parte, e nessuno poteva
+    accorgersi che il forward stava girando su Murphy mentre il backtest
+    confrontava altre strategie."""
+    try:
+        return strategies.get(key).label
+    except ValueError:
+        return f"{key} (non più in registro)"
+
+
 if state.started_at:
     st.caption(
         f"Avviato il {state.started_at} · ultima esecuzione {state.last_run_at or 'n/d'} · "
         f"parametri congelati il {config.frozen_at or 'non ancora'} · "
+        f"strategia **{_strategia_label(config.strategy)}** · "
         f"rischio {config.risk_pct:g}% per trade · leva "
         f"{'attiva' if config.leverage_enabled else 'disattivata (1,0×)'}"
     )

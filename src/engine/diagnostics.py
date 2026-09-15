@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src.engine import signals as sig
+from src.engine import strategies
 
 # Soglia oltre la quale il costo di un trade è considerato divorante.
 # Un'expectancy realistica sta tra +0,2R e +0,5R: un costo che si avvicina
@@ -303,7 +303,8 @@ class SignalQuality:
 
 def signal_quality(histories: dict[str, pd.DataFrame], horizon: str = "medio",
                     forward_bars: int = 20, max_symbols: int | None = None,
-                    progress_callback=None) -> SignalQuality:
+                    progress_callback=None,
+                    strategy_key: str = strategies.DEFAULT_STRATEGY) -> SignalQuality:
     """Rendimento medio nei `forward_bars` successivi a un segnale,
     confrontato con quello di tutte le altre barre.
 
@@ -323,7 +324,8 @@ def signal_quality(histories: dict[str, pd.DataFrame], horizon: str = "medio",
     grandezza, non come test formale."""
     out = SignalQuality(horizon_bars=forward_bars)
     symbols = list(histories)[:max_symbols] if max_symbols else list(histories)
-    warmup = sig.warmup_bars(horizon)
+    strategy = strategies.get(strategy_key)
+    warmup = strategy.warmup_bars(horizon)
 
     signal_returns: list[float] = []
     baseline_returns: list[float] = []
@@ -343,7 +345,7 @@ def signal_quality(histories: dict[str, pd.DataFrame], horizon: str = "medio",
             fwd = (closes[i + 1 + forward_bars] / entry - 1) * 100
             baseline_returns.append(fwd)
 
-            plan = sig.generate_signal(symbol, hist.iloc[:i + 1], horizon=horizon)
+            plan = strategy.generate(symbol, hist.iloc[:i + 1], horizon)
             if not plan or plan.get("bias") not in ("long", "short"):
                 continue
             # Gli short si valutano a segno invertito: un segnale short è

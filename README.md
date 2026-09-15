@@ -31,8 +31,10 @@ sul forward paper trading del 28/07–10/09/2026 (21 trade chiusi):
   questi ha trasformato un normale −1,0R lordo in −5,09R netto. **Corretto**
   (vedi `MAX_COST_FRACTION_OF_R` in `src/engine/risk.py`);
 - il forward paper trading non passava dal registro delle strategie: ha
-  testato per sei settimane il segnale Murphy invece della Donchian, l'unica
-  con un risultato positivo. **Da correggere prima di riattivarlo.**
+  testato per sei settimane il segnale Murphy invece della strategia scelta
+  nel backtest. **Corretto** il 15/09/2026: ora passa dal registro, la
+  strategia compare fra i parametri congelati, e non scarta più i piani
+  senza target (cioè tutti quelli in trailing).
 
 Nel frattempo `data/transactions.csv` conteneva ancora i movimenti di
 esempio, e il job settimanale ha prodotto otto report su un patrimonio
@@ -43,6 +45,13 @@ La priorità è stata riordinata: **prima il portafoglio reale** (valore
 certo), poi lo screening periodico fondamentale/fattori (valore probabile),
 per ultimo il trading (valore incerto). Il dettaglio è nel documento di
 diagnosi e ripartenza.
+
+Sul ramo di trading, il 15/09/2026 sono state **rimosse tutte e quattro le
+strategie** e sostituite da una sola, progettata a partire dal vincolo di
+costo invece che dal manuale: vedi «La strategia» più sotto. Backtest e
+forward paper trading restano come banco di prova — sono la parte del
+progetto che ha funzionato, perché è quella che ha permesso di scoprire che
+il resto non funzionava.
 
 **Design**: tema scuro ispirato ai terminali finanziari (sfondo quasi
 nero, card a bordo sottile, cifre in monospace, un solo colore d'accento)
@@ -58,14 +67,14 @@ emoji: gli unici indicatori visivi sono colore, tipografia e bordo.
 - `src/tradeability.py` — **Technical Tradeability Score** (0-100): quanto uno strumento è strutturalmente adatto a un sistema di trading tecnico trend-following (liquidità, volatilità ATR%, trendiness via Efficiency Ratio/ADX/Hurst, frequenza dei gap, sensibilità earnings, autocorrelazione) — non un segnale operativo, ma un filtro sull'universo di trading
 - `pages/backtest.py` — **Backtest** del piano operativo dell'Analisi Tecnica sull'Universo Trading: motore event-driven bar-by-bar (`src/engine/`), esecuzione al next-bar-open, regola stop-first sull'ambiguità intrabar, gap pagati al prezzo reale, costi Trade Republic + FX, sizing a frazione fissa del rischio, metriche in EUR e in R con intervalli di Wilson, benchmark buy-and-hold ed entrata casuale, verdetto in linguaggio piano
 - `pages/forward_paper.py` — **Forward Paper Trading**: il segnale messo alla prova in tempo reale con capitale virtuale, avanzato da un job schedulato a mercato aperto. Confronto backtest vs forward, costo del ritardo di esecuzione e curva di calibrazione della confidenza
-- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `signals.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`, `diagnostics.py`, `strategies.py`
+- `src/engine/` — il motore condiviso da backtest e forward paper trading: `costs.py`, `risk.py`, `execution.py`, `ledger.py`, `core.py` (bar loop), `metrics.py`, `benchmarks.py`, `runner.py`, `paper.py`, `calibration.py`, `diagnostics.py`, `strategies.py`. Il ponte `signals.py` verso l'analisi tecnica di Murphy è stato rimosso il 15/09/2026 insieme alla strategia
 - `src/paper_store.py` — persistenza dello stato del paper trading (posizioni aperte, trade chiusi, parametri congelati), committata nel repository dal job schedulato
 - `src/trading_universe.py` — **Universo Trading**: la short-list dei titoli selezionati per il trading tecnico, distinta dai Preferiti, con nota libera e TTS congelato all'inserimento (più la data) per accorgersi quando uno strumento diventa meno tradabile di quando l'avevi scelto
 - `pages/analisi_fondamentale.py` — **Quality** e **Valuation** (0-100 ciascuno, assi separati) per un singolo titolo: **Portafoglio**, **Preferiti** e **Cerca**, come nell'Analisi Tecnica. Scoring assoluto calibrato per settore/archetipo operativo (nessun peer group a runtime), matrice 2x2 Quality x Valuation, archetipo Dickinson, Piotroski/Altman/Beneish, Note Critiche selettive e un modello di confidenza esplicito
 - `pages/fattori.py` — valuta i titoli in Portafoglio/Preferiti sui 5 **fattori** con premio storico documentato in letteratura — Value, Momentum, Quality, Low Volatility, Size — con un punteggio **assoluto** 0-100 (scala fissa, non un confronto con altri titoli) e radar a 5 assi: è il ponte tra Analisi Fondamentale (cosa comprare) e Analisi Tecnica (quando comprarlo)
 - `pages/impostazioni_alert_report.py` — attiva/disattiva gli alert email sui segnali tecnici, l'indirizzo destinatario, quali tipi di evento notificare, più le istruzioni per configurare Gmail e i secrets GitHub Actions; e il contenuto/periodicità del report automatico
 - `scripts/generate_weekly_report.py` — genera il report periodico in background; non ha più una pagina dedicata di visualizzazione in-app, resta un artefatto markdown nel repository. **Schedulazione sospesa dal 14/09/2026**: si rifiuta di generare finché `data/transactions.csv` contiene solo i movimenti di esempio (vedi `src/example_data.py`)
-- `scripts/run_paper_trading.py` — avanza il forward paper trading di un passo (a mercato aperto) e ricommitta lo stato nel repository. **Schedulazione sospesa dal 14/09/2026**: il paper trading gira sul segnale Murphy e non passa dal registro delle strategie, quindi stava accumulando evidenza sulla strategia sbagliata
+- `scripts/run_paper_trading.py` — avanza il forward paper trading di un passo (a mercato aperto) e ricommitta lo stato nel repository. **Schedulazione sospesa dal 14/09/2026**, da riattivare quando si vuole iniziare a raccogliere evidenza sulla nuova strategia: lo stato accumulato su Murphy è archiviato in `data/archivio_murphy/` e il contatore riparte da zero
 - `scripts/send_technical_alerts.py` — scansiona portafoglio + preferiti col motore di Analisi Tecnica (lanciato ogni giorno feriale da GitHub Actions) e invia un'email solo se compare un segnale nuovo rispetto all'ultima scansione (deduplica su `data/alert_state.json`)
 - `scripts/verify_axis_distribution.py` — script di verifica manuale (non automatizzato da GitHub Actions): calcola la distribuzione di Quality/Valuation su un campione diversificato di titoli, per giudicare se l'asse Valuation discrimina abbastanza o si comprime in un mercato mediamente caro (v2.1, va eseguito con `PYTHONPATH=.` e accesso di rete reale)
 - `scripts/verify_horizon_scaling.py` — script di verifica manuale (non automatizzato): calcola su un campione diversificato di titoli la distanza percentuale di stop/target dal prezzo per ciascun orizzonte (breve/medio/lungo), per verificare che l'ampiezza del piano operativo cresca in modo marcato e monotono passando da un orizzonte all'altro (va eseguito con `PYTHONPATH=.` e accesso di rete reale)
@@ -536,8 +545,11 @@ daily accumula trade con lentezza, e servono settimane o mesi per un
 campione utile. Due anni di forward valgono però più di un backtest
 ventennale, proprio perché quel record non può essere stato contaminato.
 
-**Non è una riscrittura.** Il modulo importa `signals`, `risk`, `costs` ed
-`execution` dal motore di backtest. È l'intero motivo per cui il motore è
+**Non è una riscrittura.** Il modulo importa `strategies`, `risk`, `costs` ed
+`execution` dal motore di backtest, e dal 15/09/2026 genera i segnali
+passando dal **registro delle strategie** come fa il backtest: prima li
+chiedeva direttamente all'analisi tecnica, e il forward ha testato per sei
+settimane una strategia diversa da quella scelta nel backtest. È l'intero motivo per cui il motore è
 event-driven: se il forward avesse un codice suo, una differenza di
 risultato tra i due non sarebbe attribuibile.
 
@@ -797,33 +809,59 @@ pagina lo segnala come sospetto di contaminazione, non come trionfo: il
 decadimento fuori campione è la norma (i rendimenti calano tipicamente di
 un quarto, lo Sharpe di circa un terzo).
 
-### Strategie a confronto
+### La strategia
 
-La pagina permette di scegliere **quale segnale** testare, lasciando
-identico tutto il resto — costi, dimensionamento, regole di esecuzione,
-benchmark. È l'unico modo per rispondere a una domanda che il backtest di
-un solo algoritmo non può risolvere: *il problema è questo algoritmo o
-l'intero approccio?*
+Il 15/09/2026 **tutte le strategie precedenti sono state rimosse**: Murphy,
+Donchian, trend su media e momentum, insieme al ponte `src/engine/signals.py`
+che traduceva l'analisi tecnica in ordini. Quello che è stato eliminato è
+l'uso di Murphy come **generatore di segnali di trading**; il motore di
+analisi tecnica (`src/technical.py`) e la pagina che lo mostra restano,
+come strumento di lettura del grafico.
 
-- **Murphy (attuale)** — il motore completo di analisi tecnica, invariato.
-  Decine di regole interagenti, stop sul livello più vicino con buffer ATR,
-  target sul livello opposto più vicino.
-- **Rottura Donchian 55 giorni** — entra quando il prezzo supera il massimo
-  delle 55 barre precedenti. L'impianto classico dei Turtle.
-- **Trend su media 200** — long quando il prezzo sta sopra la media a 200 e
-  la media sale. La condizione sulla pendenza evita i rimbalzi dentro un
-  ribasso, che è dove un trend-following perde di più.
-- **Momentum 12-1 mesi** — long se il rendimento degli ultimi 12 mesi,
-  escluso l'ultimo, è positivo. La forma più semplice del momentum di serie
-  storica.
+Al loro posto ce n'è una sola, progettata a partire dal vincolo misurato
+sul forward invece che dal manuale:
 
-Le tre alternative escono con uno **stop in trailing e senza obiettivo di
-prezzo**, ed è la differenza strutturale rispetto a Murphy. Un
-trend-following vive di pochi guadagni molto grandi: un target fisso alla
-resistenza più vicina li tronca per costruzione. Senza target il guadagno
-non ha tetto, ed è ciò che rende possibile la coda destra da cui dipende
-l'intera expectancy di questo stile. Il rovescio è un win rate più basso,
-perché si restituisce sempre una parte del guadagno prima di uscire.
+**Rottura di canale 60 giorni con filtro di regime.** Solo long e solo su
+strumenti in euro. Opera unicamente quando il prezzo sta sopra la media a
+200 giorni *e* quella media sale sulle ultime 20 sedute; in quel contesto
+entra alla prima chiusura sopra il massimo di chiusura delle 60 barre
+precedenti. Stop iniziale a 2,5×ATR(20), poi stop in trailing a 3,5×ATR dal
+massimo raggiunto. Nessun obiettivo di prezzo.
+
+È una **base di partenza provvisoria**, non il risultato di un'analisi
+conclusa: serve a tenere utilizzabile il banco di prova mentre si disegna
+la strategia vera. Le regole sono ordinate per quanto è solido il motivo
+che le sostiene.
+
+| Regola | Difetto che corregge | Quanto è solida |
+|---|---|---|
+| Nessun target | L'ingresso trend-following con uscita sulla resistenza più vicina produceva un R:R mediano di 0,71: guadagni troncati, perdite lasciate correre | Difetto osservato direttamente |
+| Solo long | Trade Republic è spot-only. Il vecchio sistema ha eseguito short su TXN, PLTR, NIO: operazioni non eseguibili | Vincolo di fatto del broker |
+| Nessuna confidenza | Non esiste una misura calibrata della bontà di un singolo segnale | Non si inventa un dato che non c'è |
+| Poche operazioni, tenute a lungo | La durata mediana del vecchio sistema era di 3 sedute, e ogni attrito si paga a ogni giro | Vale a prescindere da quanto costi esattamente un giro |
+| Stop larghi ad ATR | Con il sizing a frazione fissa uno stop più largo produce una posizione più piccola, e la commissione fissa pesa meno | Regge sul fatto che la commissione sia fissa, che è certo |
+| Solo euro | Il costo FX renderebbe insostenibili i titoli in dollari | **Da rivedere.** Poggia sull'assunzione di 0,5% per gamba, che è una stima prudenziale e non un dato pubblicato da Trade Republic: le stime indipendenti vanno dallo 0,10% all'1% |
+
+Quello che non dipende da nessuna stima è l'identità `costo_in_R = costo% /
+stop%` e il fatto che la commissione per ordine sia **fissa**: una
+posizione piccola paga gli stessi euro di una grande. Da lì segue che stop
+stretti e posizioni troncate sono fragili a qualunque livello di costi.
+
+**Cosa questa strategia non è.** Non è testata. L'ingresso su rottura di
+canale appartiene alla stessa famiglia della Donchian appena cancellata, ed
+è deliberato: era l'unico elemento con un'evidenza a favore. Ma quella
+evidenza è debole — era stata selezionata fra otto configurazioni provate, e
+con otto tentativi la probabilità che almeno una superi il 95° percentile
+per puro caso è circa un terzo. Tutto il resto attorno all'ingresso è nuovo
+e non è mai stato messo alla prova in nessuna forma. Il primo backtest che
+ne mostra i numeri è un esame, non una conferma.
+
+La pagina di Backtest conserva il **selettore di strategia** anche con una
+sola voce in registro: serve a poter confrontare regole diverse dentro lo
+stesso apparato — stessi costi, stesso sizing, stesse regole di esecuzione,
+stessi benchmark. È l'unico modo per rispondere alla domanda che il
+backtest di un solo algoritmo non può risolvere: *il problema è questo
+algoritmo o l'intero approccio?*
 
 **Perché più semplici e non più sofisticate.** Ogni regola in più è una
 superficie su cui si annida l'overfitting, e un sistema con decine di
@@ -1160,9 +1198,14 @@ regressione del bug per cui la seduta di ingresso non veniva riesaminata
 una volta completa. `tests/test_calibration.py` verifica soprattutto che
 il cancello della leva NON si apra quando non deve (campione sottile,
 bande sotto soglia, confidenza che non corrisponde al risultato).
-`tests/test_strategies.py` verifica le strategie alternative su serie
-costruite per attivarle, la sequenza corretta dell'aggiornamento del
-trailing e il fatto che la strategia di default resti invariata.
+`tests/test_strategies.py` verifica l'unica strategia in registro su serie
+costruite per attivarla o per NON attivarla (il rimbalzo dentro un ribasso,
+che la sola condizione «prezzo sopra la media» lascerebbe passare), che non
+produca mai short, che non inventi una confidenza, e soprattutto che il
+vincolo di costo regga: stesso piano in euro e in dollari, con il secondo
+che sfonda la soglia. Verifica anche che uno strumento troppo poco volatile
+venga rifiutato dal sizing — la strategia da sola non garantisce il vincolo,
+servono entrambi i presidi.
 `tests/test_diagnostics.py` costruisce insiemi di trade in cui il
 problema è noto per costruzione — solo costi, solo uscite premature, solo
 piani sfavorevoli — e verifica che la diagnosi punti al posto giusto: se

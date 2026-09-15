@@ -39,7 +39,6 @@ from datetime import date
 import pandas as pd
 
 from src.engine import execution as ex
-from src.engine import signals as sig
 from src.engine import strategies
 from src.engine.costs import CostModel
 from src.engine.ledger import Ledger, OpenPosition
@@ -84,22 +83,24 @@ class BacktestConfig:
     # risultato sarebbe sistematicamente più bello del reale (le posizioni
     # in perdita tendono a restare aperte più a lungo).
     close_open_positions_at_end: bool = True
-    # Strategia di segnale. "murphy" è quella storica (src/technical.py
-    # tramite signals.generate_signal); le altre sono regole semplici e
-    # documentate in letteratura, definite in src/engine/strategies.py.
-    strategy: str = "murphy"
-    # Il broker è spot-only: gli short non sono eseguibili davvero. Tenerli
-    # nel backtest produce risultati non replicabili. Default False per non
-    # cambiare in silenzio il comportamento storico.
-    long_only: bool = False
-    # Non eseguire i piani che `trade_plan` segnala già come sfavorevoli
-    # (rapporto rischio/rendimento sotto PLAN_MIN_ACCEPTABLE_RR).
+    # Strategia di segnale, definita in src/engine/strategies.py.
+    strategy: str = strategies.DEFAULT_STRATEGY
+    # Il broker è spot-only: gli short non sono eseguibili davvero, quindi
+    # un backtest che li include misura operazioni impossibili. Dal
+    # 15/09/2026 il default è True: l'unica strategia in registro è già
+    # long-only, e il valore resta come parametro perché una strategia
+    # futura possa dichiarare di voler essere testata anche short — senza
+    # che il default sia quello permissivo.
+    long_only: bool = True
+    # Non eseguire i piani che la strategia segnala già come sfavorevoli.
     #
-    # Prima il motore ignorava quel flag ed eseguiva comunque: il backtest
-    # misurava così setup che il sistema stesso dichiara da scartare e che
-    # nessuno prenderebbe guardandoli a schermo. Non è una taratura — la
-    # soglia è quella già dichiarata in src/technical.py, non un valore
-    # scelto osservando i risultati.
+    # Nato per Murphy, che eseguiva anche i setup che dichiarava da
+    # scartare (il 76% dei piani, con un R:R mediano di 0,71). Con l'unica
+    # strategia oggi in registro il flag è **inerte**: le strategie in
+    # trailing non hanno target, quindi non hanno un rapporto
+    # rischio/rendimento pianificato e non possono dichiararlo
+    # sfavorevole. Resta perché una strategia futura con obiettivo di
+    # prezzo lo ritroverebbe già cablato e già testato.
     skip_unfavorable_rr: bool = True
 
 

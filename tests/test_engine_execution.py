@@ -16,7 +16,6 @@ import pytest
 
 from src.engine import core
 from src.engine import execution as ex
-from src.engine import signals as sig
 from src.engine.core import BacktestConfig
 from src.engine.costs import CostModel
 from src.engine.risk import RiskConfig
@@ -133,14 +132,23 @@ def _config(**kwargs) -> BacktestConfig:
     return BacktestConfig(**defaults)
 
 
-def _run_with_signal(hist: pd.DataFrame, signal_fn, monkeypatch, config=None, **run_kwargs):
-    monkeypatch.setattr(sig, "generate_signal", signal_fn)
-    monkeypatch.setattr(sig, "warmup_bars", lambda horizon: 5)
-    return core.run_backtest({"TEST": hist}, config=config or _config(),
+def _run_with_signal(hist: pd.DataFrame, signal_fn, strategia_finta, config=None, **run_kwargs):
+    """Esegue il bar loop su una strategia di test registrata al volo.
+
+    I segnali sono costruiti a mano perché l'esito di ogni trade sia
+    calcolabile senza dati di mercato: e' il motore a essere sotto esame,
+    non la strategia."""
+    key = strategia_finta(signal_fn, warmup=5)
+    config = config or _config()
+    config.strategy = key
+    # Le strategie di test producono anche short, che il default long_only
+    # scarterebbe: qui si vogliono verificare entrambe le direzioni.
+    config.long_only = False
+    return core.run_backtest({"TEST": hist}, config=config,
                               currencies={"TEST": "EUR"}, **run_kwargs)
 
 
-def test_ingresso_al_next_bar_open_non_al_close_del_segnale(monkeypatch):
+def test_ingresso_al_next_bar_open_non_al_close_del_segnale(strategia_finta):
     """Il bug di look-ahead classico: eseguire sullo stesso close usato per
     generare il segnale. Qui si verifica che l'ingresso avvenga all'apertura
     del bar SUCCESSIVO, e che quel prezzo sia diverso dal close del segnale."""
@@ -152,7 +160,7 @@ def test_ingresso_al_next_bar_open_non_al_close_del_segnale(monkeypatch):
             return {"bias": "long", "stop": px - 5, "target": px + 10, "entry": px, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert len(result.ledger.closed_trades) == 1
     trade = result.ledger.closed_trades[0]
 
@@ -165,7 +173,7 @@ def test_ingresso_al_next_bar_open_non_al_close_del_segnale(monkeypatch):
     assert trade.entry_price != pytest.approx(signal_close)
 
 
-def test_r_ricalcolato_sull_ingresso_effettivo_non_su_quello_pianificato(monkeypatch):
+def test_r_ricalcolato_sull_ingresso_effettivo_non_su_quello_pianificato(strategia_finta):
     """Lo stop resta quello pianificato ieri, ma l'ingresso reale è l'open
     di oggi: il rischio iniziale va misurato sull'ingresso effettivo,
     altrimenti gli R non sono confrontabili."""
@@ -180,13 +188,13 @@ def test_r_ricalcolato_sull_ingresso_effettivo_non_su_quello_pianificato(monkeyp
             return {"bias": "long", "stop": px - 5, "target": px + 10, "entry": px, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     trade = result.ledger.closed_trades[0]
     assert trade.risk_per_unit == pytest.approx(trade.entry_price - planned["stop"])
     assert trade.risk_per_unit != pytest.approx(planned["entry"] - planned["stop"])
 
 
-def test_sizing_a_frazione_fissa_del_rischio(monkeypatch):
+def test_sizing_a_frazione_fissa_del_rischio(strategia_finta):
     """Con rischio all'1% su 10.000 EUR, il −1R del trade deve valere 100
     EUR indipendentemente dal prezzo dello strumento."""
     hist = _linear_history()
@@ -197,20 +205,20 @@ def test_sizing_a_frazione_fissa_del_rischio(monkeypatch):
             return {"bias": "long", "stop": px - 5, "target": px + 10, "entry": px, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     trade = result.ledger.closed_trades[0]
     assert trade.initial_risk_eur == pytest.approx(100.0, rel=0.01)
 
 
-def test_nessun_trade_se_il_segnale_non_e_mai_operabile(monkeypatch):
+def test_nessun_trade_se_il_segnale_non_e_mai_operabile(strategia_finta):
     hist = _linear_history()
-    result = _run_with_signal(hist, lambda s, h, horizon="medio": {"bias": "nessun_setup"}, monkeypatch)
+    result = _run_with_signal(hist, lambda s, h, horizon="medio": {"bias": "nessun_setup"}, strategia_finta)
     assert result.ledger.closed_trades == []
     assert result.n_signals_actionable == 0
     assert result.n_signals_evaluated > 0
 
 
-def test_ordine_rifiutato_se_il_gap_apre_gia_oltre_lo_stop(monkeypatch):
+def test_ordine_rifiutato_se_il_gap_apre_gia_oltre_lo_stop(strategia_finta):
     """Se il prezzo di esecuzione è già oltre lo stop pianificato, il trade
     non ha rischio definito e non va aperto: aprirlo comunque falserebbe
     tutti gli R successivi."""
@@ -227,12 +235,12 @@ def test_ordine_rifiutato_se_il_gap_apre_gia_oltre_lo_stop(monkeypatch):
             return {"bias": "long", "stop": 95.0, "target": 110.0, "entry": 100.0, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert result.ledger.closed_trades == []
     assert "apertura oltre lo stop pianificato" in result.rejection_reasons
 
 
-def test_posizioni_aperte_chiuse_forzatamente_a_fine_periodo(monkeypatch):
+def test_posizioni_aperte_chiuse_forzatamente_a_fine_periodo(strategia_finta):
     """Lasciare fuori i trade ancora aperti renderebbe i risultati
     sistematicamente migliori del reale: le posizioni in perdita tendono a
     restare aperte più a lungo."""
@@ -245,13 +253,13 @@ def test_posizioni_aperte_chiuse_forzatamente_a_fine_periodo(monkeypatch):
             return {"bias": "long", "stop": px - 50, "target": px + 10_000, "entry": px, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert len(result.ledger.closed_trades) == 1
     assert result.ledger.closed_trades[0].exit_reason == "chiusura_forzata"
     assert result.ledger.open_positions == {}
 
 
-def test_i_costi_riducono_il_pnl_netto_rispetto_al_lordo(monkeypatch):
+def test_i_costi_riducono_il_pnl_netto_rispetto_al_lordo(strategia_finta):
     hist = _linear_history()
 
     def signal(symbol, hist_to_date, horizon="medio"):
@@ -262,14 +270,14 @@ def test_i_costi_riducono_il_pnl_netto_rispetto_al_lordo(monkeypatch):
 
     config = _config(costs=CostModel(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5,
                                       slippage_bps_per_side=5.0))
-    result = _run_with_signal(hist, signal, monkeypatch, config=config)
+    result = _run_with_signal(hist, signal, strategia_finta, config=config)
     trade = result.ledger.closed_trades[0]
     assert trade.costs_eur > 0
     assert trade.net_pnl_eur < trade.gross_pnl_eur
     assert trade.net_r < trade.gross_r
 
 
-def test_un_solo_trade_aperto_per_strumento(monkeypatch):
+def test_un_solo_trade_aperto_per_strumento(strategia_finta):
     """Segnale sempre attivo: il motore non deve accumulare posizioni sullo
     stesso strumento, che moltiplicherebbe il rischio senza dichiararlo."""
     hist = _linear_history(n=80)
@@ -278,7 +286,7 @@ def test_un_solo_trade_aperto_per_strumento(monkeypatch):
         px = float(hist_to_date["Close"].iloc[-1])
         return {"bias": "long", "stop": px - 5, "target": px + 3, "entry": px, "confidence": 70.0}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert len(result.ledger.open_positions) <= 1
     # I trade non si sovrappongono nel tempo sullo stesso simbolo.
     trades = sorted(result.ledger.closed_trades, key=lambda t: t.entry_date)
@@ -286,7 +294,7 @@ def test_un_solo_trade_aperto_per_strumento(monkeypatch):
         assert later.entry_date >= earlier.exit_date
 
 
-def test_equity_curve_registrata_ogni_giorno_operativo(monkeypatch):
+def test_equity_curve_registrata_ogni_giorno_operativo(strategia_finta):
     """Senza mark-to-market giornaliero il max drawdown risulterebbe più
     piccolo del reale: un drawdown vissuto a posizioni aperte è comunque
     un drawdown."""
@@ -298,7 +306,7 @@ def test_equity_curve_registrata_ogni_giorno_operativo(monkeypatch):
             return {"bias": "long", "stop": px - 5, "target": px + 10, "entry": px, "confidence": 70.0}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert len(result.ledger.equity_curve) > 30
     assert all(len(point) == 3 for point in result.ledger.equity_curve)
 
@@ -307,7 +315,7 @@ def test_equity_curve_registrata_ogni_giorno_operativo(monkeypatch):
 # Filtro sul rapporto rischio/rendimento
 # ---------------------------------------------------------------------------
 
-def test_non_esegue_i_piani_che_il_sistema_segnala_sfavorevoli(monkeypatch):
+def test_non_esegue_i_piani_che_il_sistema_segnala_sfavorevoli(strategia_finta):
     """Il difetto originale: il motore ignorava `rr_unfavorable` ed eseguiva
     comunque. Il backtest misurava così setup che il sistema stesso dichiara
     da scartare — sui dati reali era il 76% dei trade eseguiti."""
@@ -321,12 +329,12 @@ def test_non_esegue_i_piani_che_il_sistema_segnala_sfavorevoli(monkeypatch):
                     "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert result.ledger.closed_trades == []
     assert any("sfavorevole" in reason for reason in result.rejection_reasons)
 
 
-def test_esegue_i_piani_con_rapporto_favorevole(monkeypatch):
+def test_esegue_i_piani_con_rapporto_favorevole(strategia_finta):
     hist = _linear_history()
 
     def signal(symbol, hist_to_date, horizon="medio"):
@@ -336,11 +344,11 @@ def test_esegue_i_piani_con_rapporto_favorevole(monkeypatch):
                     "confidence": 70.0, "risk_reward": 2.0, "rr_unfavorable": False}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch)
+    result = _run_with_signal(hist, signal, strategia_finta)
     assert len(result.ledger.closed_trades) == 1
 
 
-def test_il_filtro_e_disattivabile_per_confronto(monkeypatch):
+def test_il_filtro_e_disattivabile_per_confronto(strategia_finta):
     """Disattivarlo serve a misurare quanto pesava il difetto, non a
     tornare al comportamento precedente come impostazione normale."""
     hist = _linear_history()
@@ -352,7 +360,7 @@ def test_il_filtro_e_disattivabile_per_confronto(monkeypatch):
                     "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
         return {"bias": "nessun_setup"}
 
-    result = _run_with_signal(hist, signal, monkeypatch,
+    result = _run_with_signal(hist, signal, strategia_finta,
                                config=_config(skip_unfavorable_rr=False))
     assert len(result.ledger.closed_trades) == 1
 

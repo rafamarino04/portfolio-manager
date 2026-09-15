@@ -75,26 +75,38 @@ HARD_MAX_AGGREGATE_OPEN_RISK_PCT = 5.0
 # Frazione massima di R che il costo di round trip può assorbire perché il
 # trade abbia ancora senso aprirlo.
 #
-# **Perché esiste.** I cap aggregati qui sotto non rifiutano un trade: ne
-# *riducono* la size a quanto resta nel budget. Ma la commissione per
-# ordine è FISSA e non scala con la size, quindi una posizione troncata
-# paga gli stessi euro di commissione su un rischio molto più piccolo, e
-# il costo in R esplode. Misurato sul forward paper trading del
-# 28/07–10/09/2026: tre trade aperti con un rischio residuo di 0,59 €,
+# **Il difetto che ha reso necessario il controllo.** I cap aggregati qui
+# sotto non rifiutano un trade: ne *riducono* la size a quanto resta nel
+# budget. Ma la commissione per ordine è FISSA e non scala con la size,
+# quindi una posizione troncata paga gli stessi euro su un rischio molto
+# più piccolo, e il costo in R esplode. Misurato sul forward paper trading
+# del 28/07–10/09/2026: tre trade aperti con un rischio residuo di 0,59 €,
 # 1,65 € e 2,05 € contro i ~70 € nominali, di cui uno (EXXY.DE, 26/08) ha
-# trasformato un normale −1,0R lordo in −5,09R netto. Da soli spiegano
-# circa due terzi della perdita del periodo.
+# trasformato un normale −1,0R lordo in −5,09R netto.
 #
-# **Il numero è una scelta soggettiva, dichiarata come tale.** A un terzo
-# di R di costo, il segnale deve essere sensibilmente migliore del
-# pareggio solo per ripagare l'esecuzione. Non è una soglia derivata da
-# una fonte: è una valvola di sicurezza contro le posizioni degenerate,
-# scelta larga di proposito perché non deve cambiare il comportamento del
-# sistema sui trade normali, solo impedire quelli che non possono
-# funzionare. Il vincolo di *progetto* della strategia (costo ≤ 10% di R,
-# che implica strumenti in euro e stop larghi) è una cosa diversa e più
-# stringente, e va imposto scegliendo l'universo e l'orizzonte, non qui.
-MAX_COST_FRACTION_OF_R = 1 / 3
+# **Da dove viene il 10%, e quanto è solido.** La parte robusta è
+# l'identità `costo_in_R = costo% / stop%` più il fatto che la commissione
+# per ordine sia FISSA: una posizione piccola paga gli stessi euro di una
+# grande, quindi stop stretti e posizioni troncate sono strutturalmente
+# fragili a qualunque livello di costi. Con il sizing a frazione fissa il
+# controvalore è `R / stop%`, quindi su uno strumento in euro (2 € di
+# commissioni sul round trip e 10 bp di spread complessivo) la condizione
+# costo ≤ 0,10R diventa, con R ≈ 70 €:
+#
+#     2 + 0,001 × (70 / stop%) ≤ 7      →      stop% ≥ 1,4% circa
+#
+# **La parte fragile** è invece il costo di conversione valutaria, assunto
+# allo 0,5% per gamba in `costs.py`: è una stima prudenziale del caso
+# peggiore, non una cifra pubblicata da Trade Republic (le stime
+# indipendenti vanno dallo 0,10% all'1%). È quel numero, e solo quello, a
+# rendere insostenibili i titoli in dollari. Il 10% qui è quindi una
+# **politica dichiarata**, non una costante di natura: è un parametro di
+# RiskConfig e va rivisto quando si conoscerà il costo reale.
+#
+# La soglia era 1/3 fra il 14/09 e il 15/09/2026, quando serviva solo come
+# valvola contro le posizioni degenerate senza cambiare il comportamento
+# del vecchio sistema.
+MAX_COST_FRACTION_OF_R = 0.10
 
 
 def leverage_for_confidence(confidence: float | None, enabled: bool = False) -> float:

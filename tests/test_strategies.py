@@ -1,268 +1,268 @@
-"""Test delle strategie selezionabili e dello stop in trailing.
+"""Test dell'unica strategia in registro (src/engine/strategies.py).
 
-Le strategie semplici esistono per rispondere a una domanda che il
-backtest di un solo algoritmo non può risolvere: il problema è quello
-specifico algoritmo o l'intero approccio? Perché il confronto significhi
-qualcosa devono girare nello **stesso apparato** — stessi costi, stesso
-sizing, stesse regole di esecuzione — con l'unica variabile che cambia
-essendo da dove viene il segnale. Diversi test qui verificano proprio
-quello.
+Tutte le strategie precedenti sono state rimosse il 15/09/2026 insieme al
+ponte signals.py. Quella che resta e' progettata a partire dal vincolo di
+costo misurato sul forward (costo_in_R = costo% / stop%), e i test qui
+sotto verificano proprio le proprieta' che discendono da quel vincolo -
+non solo che la funzione restituisca un dict.
 
-Sul trailing, il punto delicato è la sequenza: lo stop si aggiorna DOPO
-aver verificato le uscite sul bar corrente. Stringerlo col massimo di oggi
-e poi chiedersi se il minimo di oggi lo ha toccato significherebbe
-assumere che il massimo sia arrivato per primo — lo stesso look-ahead
-intrabar che la regola stop-first esiste per evitare.
+Le serie sono costruite a mano: nessuna rete, esito calcolabile a mente.
 """
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.engine import core
-from src.engine import execution as ex
-from src.engine import signals as sig
 from src.engine import strategies as st
-from src.engine.core import BacktestConfig
-from src.engine.costs import CostModel
-from src.engine.risk import RiskConfig
+
+WARMUP = st.REGIME_MA_LENGTH + st.REGIME_SLOPE_BARS + st.ATR_PERIOD + 5
 
 
-# ---------------------------------------------------------------------------
-# Stop in trailing
-# ---------------------------------------------------------------------------
-
-def test_trailing_si_stringe_quando_il_prezzo_va_a_favore():
-    stop, ref = ex.update_trailing_stop("long", 90.0, 100.0, bar_high=110, bar_low=104,
-                                         atr_value=2.0, atr_mult=3.0)
-    assert ref == 110.0
-    assert stop == pytest.approx(104.0)      # 110 − 3×2
-
-
-def test_trailing_non_arretra_mai():
-    """Uno stop che si allarga quando le cose vanno male non è uno stop:
-    è il modo in cui una perdita da −1R diventa una da −3R."""
-    stop, ref = ex.update_trailing_stop("long", 104.0, 110.0, bar_high=105, bar_low=98,
-                                         atr_value=2.0, atr_mult=3.0)
-    assert stop == 104.0                      # invariato
-    assert ref == 110.0                       # il riferimento non scende
-
-
-def test_trailing_short_specchiato():
-    stop, ref = ex.update_trailing_stop("short", 110.0, 100.0, bar_high=99, bar_low=90,
-                                         atr_value=2.0, atr_mult=3.0)
-    assert ref == 90.0
-    assert stop == pytest.approx(96.0)        # 90 + 3×2
-
-
-def test_trailing_non_si_muove_senza_atr():
-    """Meglio uno stop fermo che uno spostato su un dato mancante."""
-    assert ex.update_trailing_stop("long", 90.0, 100.0, 120, 110, 0.0, 3.0) == (90.0, 100.0)
-    assert ex.update_trailing_stop("long", 90.0, 100.0, 120, 110, float("nan") * 0, 3.0)[0] == 90.0
-
-
-# ---------------------------------------------------------------------------
-# Target opzionale
-# ---------------------------------------------------------------------------
-
-def test_uscita_senza_target_reagisce_solo_allo_stop():
-    """Senza target il guadagno non ha tetto: è la scelta che rende
-    possibile la coda destra su cui vive il trend-following."""
-    assert ex.resolve_exit("long", stop=95, target=None,
-                            bar_open=100, bar_high=500, bar_low=99) is None
-    event = ex.resolve_exit("long", stop=95, target=None,
-                             bar_open=100, bar_high=110, bar_low=94)
-    assert event.reason == "stop"
-
-
-def test_gap_sullo_stop_funziona_anche_senza_target():
-    event = ex.resolve_exit("long", stop=95, target=None, bar_open=90, bar_high=92, bar_low=88)
-    assert event.reason == "gap_stop" and event.price == 90
-
-
-# ---------------------------------------------------------------------------
-# Registro delle strategie
-# ---------------------------------------------------------------------------
-
-def test_registro_contiene_le_quattro_strategie():
-    assert set(st.keys()) == {"murphy", "donchian", "ma_trend", "momentum"}
-
-
-def test_strategia_sconosciuta_rifiutata_con_messaggio_utile():
-    with pytest.raises(ValueError, match="sconosciuta"):
-        st.get("inesistente")
-
-
-def test_ogni_strategia_dichiara_parametri_e_descrizione():
-    for key in st.keys():
-        s = st.get(key)
-        assert s.label and s.description and s.parameters
-        assert s.warmup_bars("medio") > 0
-
-
-def test_murphy_delega_alla_logica_esistente(monkeypatch):
-    """La strategia storica non è stata riscritta: passa per la stessa
-    funzione di sempre."""
-    chiamate = {}
-
-    def fake(symbol, hist, horizon="medio"):
-        chiamate["ok"] = True
-        return {"bias": "nessun_setup"}
-
-    monkeypatch.setattr(sig, "generate_signal", fake)
-    st.get("murphy").generate("X", pd.DataFrame({"Close": [1, 2]}), "medio")
-    assert chiamate.get("ok")
-
-
-# ---------------------------------------------------------------------------
-# Le singole strategie, su serie costruite per attivarle
-# ---------------------------------------------------------------------------
-
-def _series(values: list[float]) -> pd.DataFrame:
-    n = len(values)
-    close = np.array(values, dtype=float)
-    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
-    return pd.DataFrame({"Open": close, "High": close * 1.01, "Low": close * 0.99,
-                          "Close": close, "Volume": 1e6}, index=idx)
-
-
-def test_donchian_entra_long_sulla_rottura_del_massimo():
-    # Serie piatta, poi un nuovo massimo netto sull'ultima barra.
-    valori = [100.0] * (st.DONCHIAN_ENTRY_BARS + 20) + [130.0]
-    plan = st.get("donchian").generate("X", _series(valori), "medio")
-    assert plan["bias"] == "long"
-    assert plan["target"] is None                 # nessun tetto al guadagno
-    assert plan["trailing_atr_mult"] == st.TRAILING_ATR_MULT
-    assert plan["stop"] < plan["entry"]
-
-
-def test_donchian_non_entra_dentro_il_canale():
-    valori = [100.0] * (st.DONCHIAN_ENTRY_BARS + 20) + [100.5]
-    plan = st.get("donchian").generate("X", _series(valori), "medio")
-    assert plan["bias"] == "nessun_setup"
-
-
-def test_donchian_esclude_la_barra_corrente_dal_canale():
-    """Se il massimo del canale includesse il bar di oggi, il confronto
-    sarebbe con se stesso e il segnale scatterebbe su qualunque nuovo
-    massimo giornaliero."""
-    valori = [100.0] * (st.DONCHIAN_ENTRY_BARS + 20) + [130.0]
-    hist = _series(valori)
-    prior_high = float(hist["High"].iloc[-(st.DONCHIAN_ENTRY_BARS + 1):-1].max())
-    assert prior_high == pytest.approx(101.0)     # non include il 130 di oggi
-
-
-def test_ma_trend_richiede_pendenza_positiva():
-    """Prezzo sopra una media che scende è la configurazione tipica di un
-    rimbalzo dentro un ribasso: non deve produrre un long."""
-    n = st.MA_TREND_LENGTH + st.MA_SLOPE_LOOKBACK + 50
-    discesa = list(np.linspace(200, 100, n - 1)) + [130.0]   # sopra la media, ma media in calo
-    plan = st.get("ma_trend").generate("X", _series(discesa), "medio")
-    assert plan["bias"] != "long"
-
-
-def test_ma_trend_entra_long_in_salita():
-    n = st.MA_TREND_LENGTH + st.MA_SLOPE_LOOKBACK + 50
-    salita = list(np.linspace(100, 200, n))
-    plan = st.get("ma_trend").generate("X", _series(salita), "medio")
-    assert plan["bias"] == "long"
-    assert plan["target"] is None
-
-
-def test_momentum_positivo_apre_long():
-    n = st.MOMENTUM_LOOKBACK + 60
-    salita = list(np.linspace(100, 200, n))
-    plan = st.get("momentum").generate("X", _series(salita), "medio")
-    assert plan["bias"] == "long"
-
-
-def test_momentum_negativo_apre_short():
-    n = st.MOMENTUM_LOOKBACK + 60
-    discesa = list(np.linspace(200, 100, n))
-    plan = st.get("momentum").generate("X", _series(discesa), "medio")
-    assert plan["bias"] == "short"
-
-
-def test_strategie_senza_storico_sufficiente_non_esplodono():
-    corta = _series([100.0] * 30)
-    for key in ("donchian", "ma_trend", "momentum"):
-        assert st.get(key).generate("X", corta, "medio") is None
-
-
-def test_le_strategie_semplici_non_dichiarano_una_confidenza_finta():
-    """Inventare un punteggio di confidenza renderebbe la calibrazione una
-    finzione: queste strategie non ne producono uno."""
-    valori = [100.0] * (st.DONCHIAN_ENTRY_BARS + 20) + [130.0]
-    plan = st.get("donchian").generate("X", _series(valori), "medio")
-    assert plan["confidence"] is None
-
-
-# ---------------------------------------------------------------------------
-# Integrazione nel motore
-# ---------------------------------------------------------------------------
-
-def _trending_history(n=600, seed=5) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    close = 100 * np.exp(np.cumsum(rng.normal(0.0012, 0.010, n)))
-    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
+def _ohlc(closes: np.ndarray, spread=0.5) -> pd.DataFrame:
+    idx = pd.bdate_range("2022-01-03", periods=len(closes))
     return pd.DataFrame({
-        "Open": close * (1 + rng.normal(0, 0.002, n)),
-        "High": np.maximum(close, np.roll(close, 1)) * 1.006,
-        "Low": np.minimum(close, np.roll(close, 1)) * 0.994,
-        "Close": close, "Volume": 1e6}, index=idx)
+        "Open": closes, "High": closes + spread, "Low": closes - spread,
+        "Close": closes, "Volume": 1e6,
+    }, index=idx)
 
 
-def _config(**kwargs) -> BacktestConfig:
-    defaults = dict(initial_equity_eur=10_000.0, risk=RiskConfig(risk_pct=1.0),
-                    costs=CostModel(1.0, 0.0, 2.0))
-    defaults.update(kwargs)
-    return BacktestConfig(**defaults)
+def _rialzo(n=400, start=100.0, passo=0.25) -> pd.DataFrame:
+    """Salita regolare: media a 200 sotto il prezzo e in pendenza positiva,
+    e ogni chiusura e' un nuovo massimo del canale."""
+    return _ohlc(start + passo * np.arange(n))
 
 
-def test_ogni_strategia_gira_nel_motore_senza_eccezioni():
-    hist = _trending_history()
-    for key in st.keys():
-        result = core.run_backtest({"SYN": hist}, config=_config(strategy=key),
-                                    currencies={"SYN": "EUR"})
-        assert result.ledger.open_positions == {}
-        for t in result.ledger.closed_trades:
-            assert t.entry_date > t.signal_date
-            assert t.risk_per_unit > 0
+def _ribasso(n=400, start=200.0, passo=0.25) -> pd.DataFrame:
+    return _ohlc(start - passo * np.arange(n))
 
 
-def test_le_strategie_in_trailing_tengono_le_posizioni_piu_a_lungo():
-    """È la differenza strutturale attesa: senza target fisso la posizione
-    resta aperta finché il trend regge."""
-    hist = _trending_history()
-    durate = {}
-    for key in ("murphy", "donchian"):
-        result = core.run_backtest({"SYN": hist}, config=_config(strategy=key),
-                                    currencies={"SYN": "EUR"})
-        trades = result.ledger.closed_trades
-        durate[key] = np.mean([t.bars_held for t in trades]) if trades else 0
-    if durate["murphy"] and durate["donchian"]:
-        assert durate["donchian"] > durate["murphy"]
+def _rialzo_poi_laterale(n_su=340, n_flat=60) -> pd.DataFrame:
+    """Sale a lungo (regime rialzista consolidato) e poi si ferma: la media
+    resta sotto e in salita, ma non c'e' piu' nessuna rottura di canale."""
+    su = 100 + 0.25 * np.arange(n_su)
+    flat = np.full(n_flat, su[-1]) - 0.5
+    return _ohlc(np.concatenate([su, flat]))
 
 
-def test_long_only_scarta_gli_short():
-    """Il broker è spot-only: gli short non sono realmente eseguibili."""
-    rng = np.random.default_rng(3)
-    n = 600
-    close = 200 * np.exp(np.cumsum(rng.normal(-0.0012, 0.010, n)))   # ribasso
-    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
-    hist = pd.DataFrame({"Open": close, "High": close * 1.006, "Low": close * 0.994,
-                          "Close": close, "Volume": 1e6}, index=idx)
-
-    con_short = core.run_backtest({"SYN": hist}, config=_config(strategy="momentum"),
-                                   currencies={"SYN": "EUR"})
-    solo_long = core.run_backtest({"SYN": hist},
-                                   config=_config(strategy="momentum", long_only=True),
-                                   currencies={"SYN": "EUR"})
-    assert any(t.direction == "short" for t in con_short.ledger.closed_trades)
-    assert all(t.direction == "long" for t in solo_long.ledger.closed_trades)
-    assert "short escluso (broker spot-only)" in solo_long.rejection_reasons
+def _piano(hist):
+    return st.get("breakout_eur").generate("TEST", hist, "medio")
 
 
-def test_strategia_di_default_invariata():
-    """Chi non sceglie nulla ottiene esattamente il comportamento storico."""
-    assert BacktestConfig().strategy == "murphy"
-    assert BacktestConfig().long_only is False
+# ---------------------------------------------------------------------------
+# Filtro di regime
+# ---------------------------------------------------------------------------
+
+def test_nessun_segnale_in_regime_ribassista():
+    piano = _piano(_ribasso())
+    assert piano["bias"] == "nessun_setup"
+    assert "regime" in piano["motivo"]
+
+
+def test_nessun_segnale_senza_rottura_di_canale():
+    """Regime rialzista ma prezzo fermo: il filtro passa, l'ingresso no."""
+    piano = _piano(_rialzo_poi_laterale())
+    assert piano["bias"] == "nessun_setup"
+    assert "rottura" in piano["motivo"]
+
+
+def test_segnale_long_su_rottura_in_regime_rialzista():
+    piano = _piano(_rialzo())
+    assert piano["bias"] == "long"
+
+
+def test_non_produce_mai_short():
+    """Il broker e' spot-only: uno short non sarebbe eseguibile, e un
+    backtest che lo include misura operazioni impossibili. Il vecchio
+    sistema ne ha aperti (TXN, PLTR, NIO)."""
+    for hist in (_rialzo(), _ribasso(), _rialzo_poi_laterale()):
+        piano = _piano(hist)
+        assert piano is None or piano["bias"] != "short"
+
+
+def test_rimbalzo_dentro_un_ribasso_non_genera_segnale():
+    """Prezzo sopra una media che sta ancora scendendo: e' il caso che la
+    sola condizione 'prezzo > media' lascerebbe passare, ed e' il motivo
+    per cui esiste la condizione sulla pendenza."""
+    # Ribasso lungo, poi un rimbalzo violento e breve: abbastanza forte da
+    # riportare il prezzo sopra la media, abbastanza corto da non averne
+    # ancora girato la pendenza.
+    giu = 200 - 0.25 * np.arange(380)
+    rimbalzo = giu[-1] + 4.0 * np.arange(1, 21)
+    hist = _ohlc(np.concatenate([giu, rimbalzo]))
+    closes = hist["Close"].to_numpy()
+    # La premessa del test: il prezzo E' risalito sopra la media, ma la
+    # media sta ancora scendendo. Senza questo controllo il test potrebbe
+    # passare per il motivo sbagliato.
+    ma_ora = closes[-st.REGIME_MA_LENGTH:].mean()
+    ma_prima = closes[-st.REGIME_MA_LENGTH - st.REGIME_SLOPE_BARS:-st.REGIME_SLOPE_BARS].mean()
+    assert closes[-1] > ma_ora and ma_ora < ma_prima
+    assert _piano(hist)["bias"] == "nessun_setup"
+
+
+# ---------------------------------------------------------------------------
+# Forma del piano: e' qui che vivono i difetti del vecchio sistema
+# ---------------------------------------------------------------------------
+
+def test_nessun_target_e_uscita_in_trailing():
+    """Il difetto strutturale precedente era un ingresso trend-following
+    con un'uscita mean-reverting (target sulla resistenza piu' vicina), che
+    produceva un R:R mediano di 0,71."""
+    piano = _piano(_rialzo())
+    assert piano["target"] is None
+    assert piano["trailing_atr_mult"] == st.TRAILING_ATR_MULT
+    assert piano["target_source"] == "trailing"
+
+
+def test_stop_iniziale_alla_distanza_atr_dichiarata():
+    hist = _rialzo()
+    piano = _piano(hist)
+    atteso = piano["price"] - st.INITIAL_STOP_ATR_MULT * piano["atr"]
+    assert piano["stop"] == pytest.approx(atteso, abs=1e-4)
+    assert piano["stop"] < piano["price"]
+
+
+def test_nessuna_confidenza_inventata():
+    """Non esiste una misura calibrata della bonta' di un singolo segnale:
+    dichiararne una renderebbe finta la curva di calibrazione."""
+    piano = _piano(_rialzo())
+    assert piano["confidence"] is None
+
+
+def test_il_trailing_e_piu_largo_dello_stop_iniziale():
+    """Una volta in guadagno l'errore costoso non e' restituire un po' di
+    profitto, e' farsi buttare fuori da un ritracciamento normale."""
+    assert st.TRAILING_ATR_MULT > st.INITIAL_STOP_ATR_MULT
+
+
+# ---------------------------------------------------------------------------
+# Robustezza e point-in-time
+# ---------------------------------------------------------------------------
+
+def test_storico_troppo_corto_non_produce_segnale():
+    assert _piano(_rialzo(n=st.REGIME_MA_LENGTH)) is None
+
+
+def test_il_segnale_non_guarda_le_barre_future():
+    """Il segnale calcolato alla barra i deve essere identico che ci siano
+    o no barre successive: e' la proprieta' che rende il backtest onesto."""
+    hist = _rialzo(n=420)
+    i = 400
+    con_futuro = st.get("breakout_eur").generate("TEST", hist.iloc[:i + 1], "medio")
+    senza_futuro = st.get("breakout_eur").generate("TEST", hist.iloc[:i + 1].copy(), "medio")
+    assert con_futuro == senza_futuro
+    # e diverso da quello calcolato su tutta la serie
+    completo = _piano(hist)
+    assert completo["price"] != con_futuro["price"]
+
+
+def test_atr_non_calcolabile_non_produce_un_piano_stimato():
+    """Mai inventare un dato mancante: senza ATR non si sa dove mettere lo
+    stop, quindi non si sa quanto rischiare."""
+    hist = _rialzo()
+    piatta = hist.copy()
+    piatta[["Open", "High", "Low", "Close"]] = 100.0
+    assert _piano(piatta)["bias"] == "nessun_setup"
+
+
+# ---------------------------------------------------------------------------
+# Il vincolo di costo, che e' la ragione d'essere del disegno
+# ---------------------------------------------------------------------------
+
+def test_la_strategia_dichiara_di_operare_solo_in_euro():
+    strategia = st.get("breakout_eur")
+    assert strategia.allowed_currencies == ("EUR",)
+
+
+def _rialzo_volatilita_realistica(n=400, seed=3) -> pd.DataFrame:
+    """Salita con ATR attorno all'1% del prezzo, come un ETF azionario
+    vero. La serie lineare usata negli altri test ha un ATR% molto piu'
+    basso, e sul vincolo di costo darebbe una risposta che non descrive
+    nessuno strumento reale."""
+    rng = np.random.default_rng(seed)
+    passi = rng.normal(0.0009, 0.010, n)
+    close = 100 * np.exp(np.cumsum(passi))
+    close[-1] = close[:-1].max() * 1.01          # rottura garantita
+    idx = pd.bdate_range("2022-01-03", periods=n)
+    escursione = close * 0.006
+    return pd.DataFrame({
+        "Open": close, "High": close + escursione, "Low": close - escursione,
+        "Close": close, "Volume": 1e6,
+    }, index=idx)
+
+
+def test_lo_stop_tipico_rispetta_il_vincolo_di_costo_in_euro():
+    """La verifica che lega il disegno al motivo per cui esiste: con lo
+    stop prodotto da questa strategia su uno strumento di volatilita'
+    normale, il costo di round trip in euro resta sotto il 10% di R."""
+    from src.engine.costs import CostModel
+    from src.engine.risk import RiskConfig, size_position
+
+    piano = _piano(_rialzo_volatilita_realistica())
+    assert piano["bias"] == "long"
+    costi = CostModel(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5, slippage_bps_per_side=5.0)
+    sizing = size_position(9_300.0, piano["price"], piano["stop"], None,
+                            RiskConfig(risk_pct=0.75), costs=costi, currency="EUR")
+    assert sizing.is_tradable
+    assert sizing.estimated_cost_in_r < 0.10
+
+
+def test_lo_stesso_piano_in_dollari_sfonda_il_vincolo():
+    """Il numero che giustifica il filtro di valuta: cambia solo la valuta,
+    e il costo in R si moltiplica."""
+    from src.engine.costs import CostModel
+    from src.engine.risk import RiskConfig, size_position
+
+    piano = _piano(_rialzo_volatilita_realistica())
+    costi = CostModel(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5, slippage_bps_per_side=5.0)
+    eur = size_position(9_300.0, piano["price"], piano["stop"], None,
+                         RiskConfig(risk_pct=0.75), costs=costi, currency="EUR")
+    usd = size_position(9_300.0, piano["price"], piano["stop"], None,
+                         RiskConfig(risk_pct=0.75), costs=costi, currency="USD")
+    assert usd.estimated_cost_in_r > 3 * eur.estimated_cost_in_r
+
+
+# ---------------------------------------------------------------------------
+# Registro
+# ---------------------------------------------------------------------------
+
+def test_il_registro_contiene_solo_la_nuova_strategia():
+    assert st.keys() == ["breakout_eur"]
+    assert st.DEFAULT_STRATEGY == "breakout_eur"
+
+
+def test_murphy_e_le_altre_non_sono_piu_raggiungibili():
+    for vecchia in ("murphy", "donchian", "ma_trend", "momentum"):
+        with pytest.raises(ValueError):
+            st.get(vecchia)
+
+
+def test_i_parametri_sono_dichiarati_nella_scheda():
+    strategia = st.get("breakout_eur")
+    for valore in (str(st.REGIME_MA_LENGTH), str(st.BREAKOUT_CHANNEL_BARS),
+                   f"{st.INITIAL_STOP_ATR_MULT:g}", f"{st.TRAILING_ATR_MULT:g}"):
+        assert valore in strategia.parameters
+
+
+def test_strumento_troppo_poco_volatile_viene_rifiutato():
+    """Proprieta' scoperta scrivendo i test, e che vale la pena bloccare:
+    la strategia da sola NON garantisce il vincolo di costo. Su uno
+    strumento con ATR molto piccolo rispetto al prezzo (tipicamente un ETF
+    obbligazionario), 2,5xATR produce uno stop cosi' vicino che le
+    commissioni valgono piu' del 10% di R. A fermarlo e' il controllo di
+    sostenibilita' del sizing, non la strategia: sono due presidi distinti
+    e servono entrambi."""
+    from src.engine.costs import CostModel
+    from src.engine.risk import RiskConfig, size_position
+
+    piano = _piano(_rialzo())          # serie lineare: ATR ~0,5% del prezzo
+    assert piano["bias"] == "long"     # la strategia il segnale lo darebbe
+
+    stop_pct = (piano["price"] - piano["stop"]) / piano["price"] * 100
+    assert stop_pct < 1.4              # sotto la soglia ricavata in risk.py
+
+    sizing = size_position(9_300.0, piano["price"], piano["stop"], None,
+                            RiskConfig(risk_pct=0.75),
+                            costs=CostModel(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5,
+                                            slippage_bps_per_side=5.0),
+                            currency="EUR")
+    assert not sizing.is_tradable
+    assert "costo di esecuzione" in sizing.rejected_reason

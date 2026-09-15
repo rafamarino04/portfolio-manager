@@ -21,7 +21,6 @@ import pytest
 
 from src import paper_store
 from src.engine import paper
-from src.engine import signals as sig
 
 TODAY = dt.date(2026, 7, 28)
 
@@ -50,9 +49,12 @@ def _long_signal(stop_offset=5.0, target_offset=8.0, confidence=70.0):
     return signal
 
 
-def _step(symbols, state, config, price, hist, monkeypatch, signal=None, today=TODAY):
-    monkeypatch.setattr(sig, "generate_signal", signal or _long_signal())
-    monkeypatch.setattr(sig, "warmup_bars", lambda horizon: 5)
+def _step(symbols, state, config, price, hist, strategia_finta, signal=None, today=TODAY):
+    # Il forward passa dal registro delle strategie esattamente come il
+    # backtest: e' il difetto corretto il 15/09/2026, quando paper.py
+    # chiamava il generatore di segnali direttamente e finiva per testare
+    # una strategia diversa da quella scelta.
+    config.strategy = strategia_finta(signal or _long_signal(), warmup=5)
     histories = hist if isinstance(hist, dict) else {s: hist for s in symbols}
     prices = price if isinstance(price, dict) else {s: price for s in symbols}
     return paper.step(symbols, state, config, today=today,
@@ -73,7 +75,7 @@ def test_completed_bars_esclude_la_seduta_in_corso():
     assert len(cut) == len(hist) - 1
 
 
-def test_la_barra_parziale_di_oggi_non_e_mai_usata(monkeypatch):
+def test_la_barra_parziale_di_oggi_non_e_mai_usata(strategia_finta):
     """Il segnale deve vedere il close di IERI, mai il prezzo parziale di
     oggi travestito da close."""
     hist = _history(n=40)
@@ -84,16 +86,16 @@ def test_la_barra_parziale_di_oggi_non_e_mai_usata(monkeypatch):
         visto["ultimo_close"] = float(h["Close"].iloc[-1])
         return {"bias": "nessun_setup"}
 
-    _step(["TEST"], paper.PaperState(), _config(), 999.0, hist, monkeypatch, signal=signal)
+    _step(["TEST"], paper.PaperState(), _config(), 999.0, hist, strategia_finta, signal=signal)
 
     assert visto["ultima_data"] < TODAY
     assert visto["ultimo_close"] == pytest.approx(float(hist.iloc[-2]["Close"]))
 
 
-def test_storico_di_soli_bar_incompleti_non_apre_nulla(monkeypatch):
+def test_storico_di_soli_bar_incompleti_non_apre_nulla(strategia_finta):
     """Se dopo il troncamento non resta abbastanza storico, non si opera."""
     hist = _history(n=3)
-    state, events = _step(["TEST"], paper.PaperState(), _config(), 105.0, hist, monkeypatch)
+    state, events = _step(["TEST"], paper.PaperState(), _config(), 105.0, hist, strategia_finta)
     assert state.open_positions.empty
 
 
@@ -101,10 +103,10 @@ def test_storico_di_soli_bar_incompleti_non_apre_nulla(monkeypatch):
 # Apertura al prezzo corrente (scelta dichiarata, diversa dal backtest)
 # ---------------------------------------------------------------------------
 
-def test_apertura_al_prezzo_corrente_non_al_close_ne_all_apertura(monkeypatch):
+def test_apertura_al_prezzo_corrente_non_al_close_ne_all_apertura(strategia_finta):
     hist = _history(n=40)
     current = 141.5
-    state, events = _step(["TEST"], paper.PaperState(), _config(), current, hist, monkeypatch)
+    state, events = _step(["TEST"], paper.PaperState(), _config(), current, hist, strategia_finta)
 
     assert len(state.open_positions) == 1
     pos = state.open_positions.iloc[0]
@@ -113,22 +115,22 @@ def test_apertura_al_prezzo_corrente_non_al_close_ne_all_apertura(monkeypatch):
     assert any(e.kind == "apertura" for e in events)
 
 
-def test_registra_l_apertura_di_oggi_come_riferimento(monkeypatch):
+def test_registra_l_apertura_di_oggi_come_riferimento(strategia_finta):
     """Serve a misurare il costo del ritardo di esecuzione: è il prezzo a
     cui il backtest sarebbe entrato."""
     hist = _history(n=40)
-    state, _ = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, strategia_finta)
     pos = state.open_positions.iloc[0]
     assert pos["reference_open_price"] == pytest.approx(float(hist.iloc[-1]["Open"]))
 
 
-def test_sizing_a_frazione_fissa_come_nel_backtest(monkeypatch):
+def test_sizing_a_frazione_fissa_come_nel_backtest(strategia_finta):
     hist = _history(n=40)
-    state, _ = _step(["TEST"], paper.PaperState(), _config(risk_pct=1.0), 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), _config(risk_pct=1.0), 141.5, hist, strategia_finta)
     assert float(state.open_positions.iloc[0]["initial_risk_eur"]) == pytest.approx(100.0, rel=0.01)
 
 
-def test_nessuna_apertura_se_il_prezzo_e_gia_oltre_lo_stop(monkeypatch):
+def test_nessuna_apertura_se_il_prezzo_e_gia_oltre_lo_stop(strategia_finta):
     """Senza rischio definito il trade non si apre, come nel backtest:
     aprirlo falserebbe tutti gli R successivi."""
     hist = _history(n=40)
@@ -136,31 +138,31 @@ def test_nessuna_apertura_se_il_prezzo_e_gia_oltre_lo_stop(monkeypatch):
     def signal(symbol, h, horizon="medio"):
         return {"bias": "long", "stop": 200.0, "target": 300.0, "entry": 150.0, "confidence": 70.0}
 
-    state, events = _step(["TEST"], paper.PaperState(), _config(), 150.0, hist, monkeypatch,
+    state, events = _step(["TEST"], paper.PaperState(), _config(), 150.0, hist, strategia_finta,
                            signal=signal)
     assert state.open_positions.empty
     assert any("oltre lo stop" in e.message for e in events)
 
 
-def test_nessuna_apertura_senza_prezzo_corrente(monkeypatch):
+def test_nessuna_apertura_senza_prezzo_corrente(strategia_finta):
     hist = _history(n=40)
-    state, events = _step(["TEST"], paper.PaperState(), _config(), None, hist, monkeypatch)
+    state, events = _step(["TEST"], paper.PaperState(), _config(), None, hist, strategia_finta)
     assert state.open_positions.empty
     assert any("Prezzo corrente non disponibile" in e.message for e in events)
 
 
-def test_un_solo_trade_per_simbolo(monkeypatch):
+def test_un_solo_trade_per_simbolo(strategia_finta):
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     assert len(state.open_positions) == 1
-    state, _ = _step(["TEST"], state, config, 141.6, hist, monkeypatch)
+    state, _ = _step(["TEST"], state, config, 141.6, hist, strategia_finta)
     assert len(state.open_positions) == 1
 
 
-def test_segnale_non_operabile_non_apre(monkeypatch):
+def test_segnale_non_operabile_non_apre(strategia_finta):
     hist = _history(n=40)
-    state, _ = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, monkeypatch,
+    state, _ = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, strategia_finta,
                       signal=lambda s, h, horizon="medio": {"bias": "nessun_setup"})
     assert state.open_positions.empty
 
@@ -169,16 +171,16 @@ def test_segnale_non_operabile_non_apre(monkeypatch):
 # Uscite: stesse regole del backtest
 # ---------------------------------------------------------------------------
 
-def test_uscita_intraday_sul_prezzo_corrente(monkeypatch):
+def test_uscita_intraday_sul_prezzo_corrente(strategia_finta):
     """Il tocco di stop/target rilevato sul prezzo corrente chiude a quel
     prezzo: è la parte realtime del forward."""
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     stop = float(state.open_positions.iloc[0]["stop"])
 
     # Nessuna nuova barra completa: solo il prezzo corrente crolla sotto lo stop.
-    state, events = _step(["TEST"], state, config, stop - 1.0, hist, monkeypatch)
+    state, events = _step(["TEST"], state, config, stop - 1.0, hist, strategia_finta)
 
     assert state.open_positions.empty
     assert len(state.closed_trades) == 1
@@ -187,12 +189,12 @@ def test_uscita_intraday_sul_prezzo_corrente(monkeypatch):
     assert float(trade["net_r"]) < 0
 
 
-def test_uscita_su_barra_completa_applica_stop_first(monkeypatch):
+def test_uscita_su_barra_completa_applica_stop_first(strategia_finta):
     """Una barra successiva che contiene sia stop sia target deve chiudere
     sullo stop, esattamente come nel backtest."""
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     pos = state.open_positions.iloc[0]
     stop, target = float(pos["stop"]), float(pos["target"])
 
@@ -203,7 +205,7 @@ def test_uscita_su_barra_completa_applica_stop_first(monkeypatch):
         "Open": 141.5, "High": target + 5, "Low": stop - 5, "Close": 141.5, "Volume": 1e6}
     extended = extended.sort_index()
 
-    state, events = _step(["TEST"], state, config, 141.5, extended, monkeypatch, today=tomorrow)
+    state, events = _step(["TEST"], state, config, 141.5, extended, strategia_finta, today=tomorrow)
 
     assert len(state.closed_trades) == 1
     trade = state.closed_trades.iloc[0]
@@ -211,7 +213,7 @@ def test_uscita_su_barra_completa_applica_stop_first(monkeypatch):
     assert float(trade["exit_price"]) == pytest.approx(stop)
 
 
-def test_la_seduta_di_ingresso_viene_riesaminata_quando_e_completa(monkeypatch):
+def test_la_seduta_di_ingresso_viene_riesaminata_quando_e_completa(strategia_finta):
     """Regressione di un bug reale trovato dai test.
 
     Entrando a metà giornata, la barra di quel giorno non è ancora
@@ -222,7 +224,7 @@ def test_la_seduta_di_ingresso_viene_riesaminata_quando_e_completa(monkeypatch):
     prima esecuzione successiva, quando è chiusa."""
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     pos = state.open_positions.iloc[0]
     stop = float(pos["stop"])
     # La seduta di ingresso non risulta già processata.
@@ -234,24 +236,24 @@ def test_la_seduta_di_ingresso_viene_riesaminata_quando_e_completa(monkeypatch):
     completed.loc[pd.Timestamp(TODAY), "Low"] = stop - 3.0
     tomorrow = TODAY + dt.timedelta(days=1)
 
-    state, _ = _step(["TEST"], state, config, 141.5, completed, monkeypatch, today=tomorrow)
+    state, _ = _step(["TEST"], state, config, 141.5, completed, strategia_finta, today=tomorrow)
     assert len(state.closed_trades) == 1
     assert state.closed_trades.iloc[0]["exit_reason"] == "stop"
 
 
-def test_calcolo_del_ritardo_di_esecuzione_alla_chiusura(monkeypatch):
+def test_calcolo_del_ritardo_di_esecuzione_alla_chiusura(strategia_finta):
     """execution_delay_r misura, in R, la differenza tra entrare al prezzo
     corrente ed entrare all'apertura come nel backtest."""
     hist = _history(n=40)
     config = _config()
     current = 141.5
-    state, _ = _step(["TEST"], paper.PaperState(), config, current, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, current, hist, strategia_finta)
     pos = state.open_positions.iloc[0]
     ref_open = float(pos["reference_open_price"])
     risk = float(pos["risk_per_unit"])
     stop = float(pos["stop"])
 
-    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, monkeypatch)
+    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, strategia_finta)
     trade = state.closed_trades.iloc[0]
 
     atteso = (ref_open - current) / risk
@@ -260,12 +262,12 @@ def test_calcolo_del_ritardo_di_esecuzione_alla_chiusura(monkeypatch):
     assert atteso < 0
 
 
-def test_i_costi_riducono_il_risultato_netto(monkeypatch):
+def test_i_costi_riducono_il_risultato_netto(strategia_finta):
     hist = _history(n=40)
     config = _config(order_fee_eur=1.0, fx_cost_pct_per_leg=0.5, slippage_bps_per_side=5.0)
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     stop = float(state.open_positions.iloc[0]["stop"])
-    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, monkeypatch)
+    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, strategia_finta)
     trade = state.closed_trades.iloc[0]
     assert float(trade["costs_eur"]) > 0
     assert float(trade["net_pnl_eur"]) < float(trade["gross_pnl_eur"])
@@ -276,20 +278,20 @@ def test_i_costi_riducono_il_risultato_netto(monkeypatch):
 # Stato e persistenza
 # ---------------------------------------------------------------------------
 
-def test_equity_si_aggiorna_dopo_la_chiusura(monkeypatch):
+def test_equity_si_aggiorna_dopo_la_chiusura(strategia_finta):
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
     equity_aperta = state.equity_eur
     stop = float(state.open_positions.iloc[0]["stop"])
-    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, monkeypatch)
+    state, _ = _step(["TEST"], state, config, stop - 1.0, hist, strategia_finta)
     assert state.equity_eur < equity_aperta
 
 
-def test_roundtrip_salvataggio_e_ricarica(tmp_path, monkeypatch):
+def test_roundtrip_salvataggio_e_ricarica(tmp_path, strategia_finta):
     hist = _history(n=40)
     config = _config()
-    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, monkeypatch)
+    state, _ = _step(["TEST"], paper.PaperState(), config, 141.5, hist, strategia_finta)
 
     op = str(tmp_path / "open.csv")
     cp = str(tmp_path / "closed.csv")
@@ -321,13 +323,13 @@ def test_la_leva_nasce_disattivata():
     assert _config().risk_config().leverage_enabled is False
 
 
-def test_step_su_lista_vuota_non_esplode(monkeypatch):
-    state, events = _step([], paper.PaperState(), _config(), 100.0, {}, monkeypatch)
+def test_step_su_lista_vuota_non_esplode(strategia_finta):
+    state, events = _step([], paper.PaperState(), _config(), 100.0, {}, strategia_finta)
     assert state.open_positions.empty
     assert events == []
 
 
-def test_paper_non_apre_sui_piani_sfavorevoli(monkeypatch):
+def test_paper_non_apre_sui_piani_sfavorevoli(strategia_finta):
     """Backtest e forward devono applicare gli stessi filtri: se il paper
     tradasse setup che il backtest scarta, il confronto tra i due — che è
     l'intero scopo del forward — misurerebbe due strategie diverse."""
@@ -338,7 +340,7 @@ def test_paper_non_apre_sui_piani_sfavorevoli(monkeypatch):
         return {"bias": "long", "stop": px - 5, "target": px + 2, "entry": px,
                 "confidence": 70.0, "risk_reward": 0.4, "rr_unfavorable": True}
 
-    state, events = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, monkeypatch,
+    state, events = _step(["TEST"], paper.PaperState(), _config(), 141.5, hist, strategia_finta,
                            signal=signal)
     assert state.open_positions.empty
     assert any("sfavorevole" in e.message for e in events)

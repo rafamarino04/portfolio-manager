@@ -323,17 +323,24 @@ strategy_key = st.selectbox(
 )
 _strategy = strategies.get(strategy_key)
 st.info(f"**{_strategy.label}** — {_strategy.description}")
-st.caption(f"Parametri: {_strategy.parameters}. Nessuna soglia è stata scelta osservando i "
-           "risultati: sono i valori convenzionali della letteratura.")
+st.caption(
+    "Nessuna soglia è stata scelta osservando i risultati. Questa strategia non è mai stata "
+    "testata in nessuna forma: il primo backtest che ne mostra i numeri è un esame, non una "
+    "conferma. L'ingresso su rottura di canale appartiene alla stessa famiglia della Donchian "
+    "rimossa, che era l'unico elemento con un'evidenza a favore — evidenza debole, perché "
+    "selezionata fra otto configurazioni provate."
+)
 
 c1, c2, c3 = st.columns(3)
 with c1:
     symbols = st.multiselect(f"Strumenti ({scope})", available_tickers,
                               default=available_tickers, key=f"bt_symbols_{scope}")
-    horizon = st.selectbox("Orizzonte del segnale", ["medio", "breve"], key="bt_horizon",
-                            help="Rilevante solo per la strategia Murphy: le altre hanno "
-                                 "parametri propri e non dipendono dall'orizzonte. Solo barre "
-                                 "daily — il lungo termine userebbe barre settimanali.")
+    # Il selettore di orizzonte è stato rimosso il 15/09/2026 insieme alla
+    # strategia Murphy, l'unica che lo usasse. La strategia in registro ha
+    # periodi propri e fissi: lasciare un controllo che non cambia nulla
+    # suggerirebbe una flessibilità inesistente.
+    horizon = "medio"
+    st.caption(f"Periodi fissi della strategia: {_strategy.parameters}.")
 with c2:
     initial_equity = st.number_input("Capitale iniziale (EUR)", min_value=1000.0, value=10_000.0,
                                       step=1000.0, key="bt_equity")

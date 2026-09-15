@@ -39,7 +39,6 @@ from src import data_provider as dp
 from src import technical as tech
 from src.engine import benchmarks as bm
 from src.engine import metrics as mt
-from src.engine import signals as sig
 from src.engine import strategies
 from src.engine.core import BacktestConfig, BacktestResult, run_backtest
 
@@ -197,12 +196,6 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
     volta sola, dopo aver congelato i parametri, e ogni sbirciata
     aggiuntiva lo consuma."""
     config = config or BacktestConfig()
-    if config.strategy == "murphy" and config.horizon not in sig.SUPPORTED_HORIZONS:
-        raise ValueError(
-            f"Orizzonte '{config.horizon}' non supportato dal motore di backtest. "
-            f"Supportati: {', '.join(sig.SUPPORTED_HORIZONS)} (il lungo termine usa barre "
-            "settimanali e richiederebbe un ricampionamento dedicato)."
-        )
 
     if phase_callback:
         phase_callback("Scarico gli storici", None)
@@ -212,6 +205,27 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
         diagnostics.append(
             f"Esclusi per storico insufficiente (<300 barre daily): {', '.join(skipped)}."
         )
+
+    # Filtro di valuta della strategia. Va applicato PRIMA di simulare e va
+    # dichiarato: un universo silenziosamente ridotto cambia i risultati, e
+    # qui la riduzione può essere massiccia (la strategia in euro scarta
+    # tutti i titoli americani). Vedi `allowed_currencies` in strategies.py.
+    strategy = strategies.get(config.strategy)
+    if strategy.allowed_currencies:
+        ammesse = {c.upper() for c in strategy.allowed_currencies}
+        esclusi = [sym for sym in histories
+                   if (currencies.get(sym) or "").upper() not in ammesse]
+        for sym in esclusi:
+            histories.pop(sym, None)
+        if esclusi:
+            diagnostics.append(
+                f"Esclusi perché non denominati in {'/'.join(sorted(ammesse))}: "
+                f"{', '.join(sorted(esclusi))}. La strategia opera solo in "
+                f"{'/'.join(sorted(ammesse))} perché il costo di conversione valutaria "
+                "(0,5% per gamba) vale da solo più del 10% del rischio su qualunque stop "
+                "ragionevole."
+            )
+
     if not histories:
         return FullBacktestReport(symbols=symbols, horizon=config.horizon, in_sample=None,
                                    out_of_sample=None, split_date=None, history_start=None,
@@ -224,10 +238,8 @@ def run_full_backtest(symbols: list[str], config: BacktestConfig | None = None,
                         for h in histories.values() for ts in h.index})
     split = compute_split_date(histories, oos_fraction)
 
-    strategy = strategies.get(config.strategy)
     warmup = strategy.warmup_bars(config.horizon)
-    lookback = sig.HORIZON_LOOKBACK_BARS.get(config.horizon, warmup)
-    first_operative = all_dates[min(len(all_dates) - 1, max(warmup, lookback))]
+    first_operative = all_dates[min(len(all_dates) - 1, warmup)]
 
     in_sample = _run_segment("In-sample", histories, currencies, config,
                               start=first_operative, end=split,

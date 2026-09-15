@@ -104,16 +104,24 @@ def test_pagina_configurazione_senza_eccezioni(universo_con_un_titolo):
 
     keys = {w.key for w in at.selectbox} | {w.key for w in at.multiselect}
     assert any(k.startswith("bt_symbols") for k in keys)
-    assert "bt_horizon" in keys
+    assert "bt_strategy" in keys
 
 
-def test_orizzonte_lungo_non_e_offerto(universo_con_un_titolo):
-    """Il lungo termine usa barre settimanali e non è supportato dal
-    motore: non deve essere selezionabile, invece di fallire a runtime."""
+def test_il_selettore_di_orizzonte_non_esiste_piu(universo_con_un_titolo):
+    """La strategia in registro ha periodi propri e fissi: un controllo che
+    non cambia nulla suggerirebbe una flessibilità inesistente."""
     at = AppTest.from_file("pages/backtest.py")
     at.run(timeout=60)
-    horizon = [s for s in at.selectbox if s.key == "bt_horizon"][0]
-    assert "lungo" not in list(horizon.options)
+    assert not [s for s in at.selectbox if s.key == "bt_horizon"]
+
+
+def test_la_pagina_dichiara_che_la_strategia_non_e_mai_stata_testata(universo_con_un_titolo):
+    """Guardrail contro l'autoinganno: la scheda della strategia non deve
+    somigliare a un risultato acquisito."""
+    at = AppTest.from_file("pages/backtest.py")
+    at.run(timeout=60)
+    testo = "\n".join(c.value for c in at.caption)
+    assert "mai stata testata" in testo
 
 
 def test_leva_dichiarata_disattivata(universo_con_un_titolo):

@@ -190,12 +190,20 @@ def test_beats_confronta_con_la_mediana():
 # Runner: split, orizzonti, contaminazione
 # ---------------------------------------------------------------------------
 
-def test_orizzonte_non_supportato_viene_rifiutato_esplicitamente():
-    """L'orizzonte lungo usa barre settimanali: va rifiutato con un
-    messaggio chiaro invece di essere approssimato con dati daily, che
-    produrrebbe risultati diversi da quelli mostrati nell'app."""
-    with pytest.raises(ValueError, match="lungo"):
-        runner.run_full_backtest(["X"], config=BacktestConfig(horizon="lungo"))
+def test_la_strategia_ha_periodi_propri_e_ignora_l_orizzonte():
+    """Fino al 15/09/2026 l'orizzonte era un parametro vero, perche' la
+    strategia Murphy ci scalava sopra medie e finestre. La strategia che
+    resta ha periodi fissi: l'orizzonte non deve cambiare nulla, e il
+    selettore e' stato tolto dalla pagina invece di restare li' a
+    suggerire una flessibilita' inesistente."""
+    from src.engine import strategies as st_mod
+    strategia = st_mod.get(st_mod.DEFAULT_STRATEGY)
+    assert strategia.warmup_bars("breve") == strategia.warmup_bars("medio")
+
+    hist = _synthetic_history(n=600)
+    a = strategia.generate("SYN", hist, "breve")
+    b = strategia.generate("SYN", hist, "medio")
+    assert a == b
 
 
 def test_split_date_divide_il_calendario():
