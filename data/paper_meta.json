@@ -1,0 +1,17 @@
+{
+  "equity_eur": 10000.0,
+  "started_at": "2026-09-18T17:59:28",
+  "last_run_at": "2026-09-18T17:59:28",
+  "config": {
+    "horizon": "medio",
+    "strategy": "breakout_eur",
+    "initial_equity_eur": 10000.0,
+    "risk_pct": 0.75,
+    "leverage_enabled": false,
+    "order_fee_eur": 1.0,
+    "fx_cost_pct_per_leg": 0.5,
+    "slippage_bps_per_side": 5.0,
+    "skip_unfavorable_rr": true,
+    "frozen_at": "2026-09-18T17:59:28"
+  }
+}
