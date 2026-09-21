@@ -1,7 +1,7 @@
 {
   "equity_eur": 10000.0,
   "started_at": "2026-09-18T17:59:28",
-  "last_run_at": "2026-09-18T17:59:28",
+  "last_run_at": "2026-09-21T19:50:04",
   "config": {
     "horizon": "medio",
     "strategy": "breakout_eur",
